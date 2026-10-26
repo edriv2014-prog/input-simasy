@@ -8,6 +8,7 @@ export default function Page() {
   const [loading, setLoading] = useState(false);
 
   const handleUpload = async (e: any) => {
+alert(e.target.files?.[0])		
     const file = e.target.files?.[0];
     if (!file) return;
     setPreview(URL.createObjectURL(file));

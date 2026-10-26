@@ -49,7 +49,7 @@ export default function Page(){
 
   return(
     <div style={{padding:20}}>
-      <h2 style={{color:"#0F8A5F"}}>Registrasi Puskesmas - Versi Cepat</h2>
+      <h2 style={{color:"#0F8A5F"}}>Input KTP SImasy - Versi Cepat</h2>
       <input type="file" accept="image/*" onChange={handleUpload} />
       <p style={{fontSize:12, color:"orange"}}>{progress}</p>
       {preview && <img src={preview} style={{maxWidth:400, marginTop:10}} />}

@@ -42,12 +42,11 @@ export default function Page(){
 
   return(
     <div style={{padding:20, maxWidth:900, margin:"0 auto"}}>
-      <h2 style={{color:"#0F8A5F"}}>Registrasi Puskesmas - OCR.space 5 Keys</h2>
-      <p style={{fontSize:12}}>Upload KTP Tommy - Hasil sama kayak getKTP.php kamu di localhost:8090</p>
+      <h2 style={{color:"#0F8A5F"}}>UPLOAD KTP SIMASY</h2>
       <input type="file" accept="image/*" onChange={onUpload} />
       {preview && <img src={preview} style={{maxWidth:400, marginTop:10, border:"1px solid #ccc"}} />}
       {loading && <p>⏳ Membaca KTP via OCR.space (1-2 detik)...</p>}
-      {hasil && (
+      {hasil && (a
         <div style={{marginTop:15}}>
           {hasil.error ? <div style={{background:"#fee", padding:10}}>{hasil.error}</div> : <>
             <div style={{background:"#e6ffed", padding:10, fontSize:12}}>✅ {hasil.info}</div>

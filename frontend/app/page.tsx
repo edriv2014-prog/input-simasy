@@ -3,6 +3,7 @@ import { useState } from "react";
 import { createWorker } from "tesseract.js";
 
 export default function Page() {
+
   const [preview, setPreview] = useState<string | null>(null);
   const [hasil, setHasil] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -46,7 +47,7 @@ alert(e.target.files?.[0])
       setLoading(false);
     }
   };
-
+alert("DSDSDS")
   return (
     <div style={{padding:20, fontFamily:"sans-serif"}}>
       <h1>Registrasi Pasien Puskesmas</h1>

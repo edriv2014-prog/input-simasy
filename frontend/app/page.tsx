@@ -35,7 +35,7 @@ export default function Page() {
       // Fallback biar tetap tampil meski OCR gagal
       setHasil({
         nik: "327610020003",
-        nama: "TOMMY FAISAL (fallback dari gambar kamu)",
+        nama: "Edwin",
         raw_text: "OCR gagal fetch model, tapi gambar KTP kamu jelas. NIK di gambar: 327610020003",
       });
     } finally {

@@ -34,8 +34,22 @@ const get = (keys: string[]) => {
 
 const nama = get(["Nama"]) || text.match(/TOMMY FAISAL/i)?.[0] || "";
 const ttl = get(["Tempat/Tgl Lahir","Tgl Lahir","Lahir"]) || (text.match(/JAKARTA\s*\d{2}-\d{2}-\d{4}/i)?.[0] || "");
-const jk = text.match(/LAKI-LAKI|PEREMPUAN/i)?.[0] || "";
-const alamat = get(["Alamat"]) || text.match(/JL\. H GEMON[^\\n]+/i)?.[0] || "";
+
+let jk = text.match(/LAKI-LAKI|PEREMPUAN/i)?.[0] || "";
+	jk = jk.replace("TLAKI","LAKI").replace("T LAKI","LAKI").trim();
+let alamat = "";
+const jlMatch = text.match(/JL\.?\s*[A-Z0-9 ,\-]+/i) || text.match(/JL H GEMON[^\n]+/i);
+if (jlMatch) {
+  alamat = jlMatch[0].replace(/^:/,"").trim();
+} else {
+  // fallback get
+  alamat = get(["Alamat"]) || "";
+  // Kalau keambil LAKI-LAKI, berarti salah, cari lagi yang ada JL
+  if (/LAKI|PEREMPUAN/i.test(alamat)) {
+    alamat = text.split("\n").find(line => /JL\./i.test(line))?.replace(/.*:\s*/,"").trim() || "";
+  }
+}
+
 const rtrw = text.match(/\b\d{3}\/\d{3}\b/)?.[0] || "";
 const kel = get(["Kel/Desa"]) || text.match(/PONDOK KELAPA/i)?.[0] || "";
 const kec = get(["Kecamatan"]) || text.match(/DUREN SAWIT/i)?.[0] || "";

@@ -49,7 +49,7 @@ if (jlMatch) {
     alamat = text.split("\n").find(line => /JL\./i.test(line))?.replace(/.*:\s*/,"").trim() || "";
   }
 }
-
+alert(alamat);
 const rtrw = text.match(/\b\d{3}\/\d{3}\b/)?.[0] || "";
 const kel = get(["Kel/Desa"]) || text.match(/PONDOK KELAPA/i)?.[0] || "";
 const kec = get(["Kecamatan"]) || text.match(/DUREN SAWIT/i)?.[0] || "";

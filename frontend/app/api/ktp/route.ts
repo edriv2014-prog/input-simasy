@@ -21,7 +21,7 @@ if (jlMatch) {
 if (/LAKI|PEREMPUAN/i.test(alamat)) {
   const allJl = [...text.matchAll(/(?:JL\.|KP\.)[^\n]+/gi)];
   alamat = allJl[0]?.[0]?.replace(/^:\s*/,"").trim() || "";
-}
+};
 
 // Lainnya biar tidak ketuker lagi
 const ttl = text.match(/JAKARTA\s*\d{2}-\d{2}-\d{4}|BOGOR,\s*\d{2}-\d{2}-\d{4}|\d{2}-\d{2}-\d{4}/i)?.[0] || "";

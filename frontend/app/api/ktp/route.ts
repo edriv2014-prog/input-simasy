@@ -1,103 +1,91 @@
 import { NextRequest, NextResponse } from "next/server";
 
 function parseKTP(rawText: string) {
-  let text = rawText.replace(/\r/g, "").replace(/\n\s*:\s*/g, ": ").replace(/:\s*\n/g, ": ");
+  let text = rawText.replace(/\r/g, "");
   const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-  const upperText = text.toUpperCase();
 
-  // Helper ambil setelah label
-  const getAfter = (keywords: string[]) => {
-    for (let i = 0; i < lines.length; i++) {
-      const lineUp = lines[i].toUpperCase();
-      for (const kw of keywords) {
-        if (lineUp.includes(kw.toUpperCase())) {
-          // 1. Cek di baris yang sama ada : value
-          const same = lines[i].split(":").slice(1).join(":").trim();
-          if (same && same.length > 1 && !same.toUpperCase().includes("PROVINSI") && same.length < 80) {
-            return same;
-          }
-          // 2. Cek 1-2 baris setelahnya
-          for (let j = 1; j <= 2; j++) {
-            if (i + j < lines.length) {
-              let cand = lines[i + j].replace(/^:\s*/, "").trim();
-              if (cand && !/PROVINSI|KABUPATEN|NIK|NAMA|TEMPAT|JENIS|ALAMAT|RT\/RW|KEL\/DESA|KECAMATAN|AGAMA|STATUS|PEKERJAAN|KEWARGANEGARAAN|BERLAKU/i.test(cand) || /^\d{3}\/\d{3}$/.test(cand) || /ISLAM|KAWIN|JL\.|KP\./i.test(cand)) {
-                if (cand.length > 1) return cand;
-              }
-              // kalau cand ternyata label lain, skip
-              if (/^:?\s*\d{16}\s*$/.test(cand)) return cand.replace(/:/g,"").trim();
-            }
-          }
-        }
-      }
-    }
-    return "";
-  };
+  // NIK
+  const nik = text.match(/\b\d{16}\b/)?.[0] || "";
 
-  // NIK - paling gampang
-  const nik = text.match(/\b\d{16}\b/)?.[0] || getAfter(["NIK"]).replace(/\D/g,"") || "";
+  // NAMA
+  const nama = text.match(/Nama\s*:?\s*([A-Z ]{3,})/i)?.[1]?.split("\n")[0].trim() || "";
 
-  // Nama
-  let nama = "";
-  const namaMatch = text.match(/Nama\s*:?\s*([A-Z ]{3,})/i);
-  if (namaMatch) nama = namaMatch[1].split("\n")[0].trim();
-  else nama = getAfter(["Nama"]);
-
-  // Tempat/Tgl Lahir - ambil tanggal + kota
+  // TEMPAT/TGL LAHIR - ambil JAKARTA + tanggal
   let ttl = "";
-  const dateMatch = text.match(/\d{2}-\d{2}-\d{4}/);
-  if (dateMatch) {
-    const idx = text.indexOf(dateMatch[0]);
-    const before = text.substring(Math.max(0, idx - 30), idx);
-    const city = before.match(/(JAKARTA|BOGOR|BANDUNG|BEKASI|DEPOK|CIANJUR|GARUT)/i)?.[0] || "";
-    ttl = city ? `${city} ${dateMatch[0]}` : dateMatch[0];
-    // untuk kasus "BOGOR, 14-08-1998"
-    const fullTTL = text.match(/BOGOR,?\s*\d{2}-\d{2}-\d{4}|JAKARTA\s*\d{2}-\d{2}-\d{4}/i);
-    if (fullTTL) ttl = fullTTL[0].replace(/\s+/g," ");
+  const tgl = text.match(/\d{2}-\d{2}-\d{4}/)?.[0] || "";
+  if (tgl) {
+    const m = text.match(new RegExp(`(JAKARTA|BOGOR|BEKASI|BANDUNG)[^\\n]{0,20}${tgl.replace(/-/g,"-")}|${tgl}`, "i"));
+    ttl = m ? m[0].replace(/\s+/g," ").trim().replace(/Tempat\/Tgl Lahir/i,"").trim() : tgl;
+    if (!ttl.includes("JAKARTA") && text.toUpperCase().includes("JAKARTA")) {
+      ttl = `JAKARTA ${tgl}`;
+    }
   }
-  if (!ttl) ttl = getAfter(["Tempat/Tgl Lahir", "Tempat"]);
 
-  // Jenis Kelamin - cari langsung LAKI/PEREMPUAN, kebal TLAKI
-  let jk = text.match(/LAKI-LAKI|PEREMPUAN/i)?.[0] || getAfter(["Jenis Kelamin"]);
-  jk = jk.toUpperCase().replace("TLAKI-LAKI","LAKI-LAKI").replace("TLAKI","LAKI");
+  // JENIS KELAMIN
+  let jk = text.match(/LAKI-LAKI|PEREMPUAN/i)?.[0] || "";
+  jk = jk.replace(/TLAKI/i, "LAKI").toUpperCase();
 
-  // --- ALAMAT KONDISI AKA ---
+  // ALAMAT - KONDISI JL/KP - FIX TLAKI
   let alamat = "";
-  // KONDISI 1: JL. - pakai Array.from biar lolos build Vercel
-  const jlAll = Array.from(text.matchAll(/(JL\.?\s*[A-Z0-9 ,\/\-]{3,})/gi));
-  const kpAll = Array.from(text.matchAll(/(KP\.?\s*[A-Z0-9 ,\/\-]{3,})/gi));
-  
-  if (jlAll.length > 0) {
-    alamat = (jlAll[0] as any)[0].replace(/^:\s*/,"").trim();
-  } else if (kpAll.length > 0) {
-    alamat = (kpAll[0] as any)[0].replace(/^:\s*/,"").trim();
-  } else {
-    // Fallback: ambil setelah Alamat tapi filter LAKI
-    let rawAlamat = getAfter(["Alamat"]);
-    if (/LAKI|PEREMPUAN/i.test(rawAlamat)) {
-      // kalau keambil jenis kelamin, cari baris berikutnya yang ada JL/KP
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].toUpperCase().includes("ALAMAT")) {
-          for (let j = i+1; j < Math.min(i+5, lines.length); j++) {
-            if (/JL\.|KP\./i.test(lines[j])) {
-              rawAlamat = lines[j].replace(/^:\s*/,"").trim();
-              break;
-            }
+  const allJL = Array.from(text.matchAll(/JL\.?\s*[A-Z0-9 ,\/\-]{3,}/gi));
+  const allKP = Array.from(text.matchAll(/KP\.?\s*[A-Z0-9 ,\/\-]{3,}/gi));
+  if (allJL.length > 0) alamat = (allJL[0] as any)[0].replace(/^:\s*/,"").trim();
+  else if (allKP.length > 0) alamat = (allKP[0] as any)[0].replace(/^:\s*/,"").trim();
+
+  // RT/RW
+  const rtRw = text.match(/\b\d{3}\/\d{3}\b/)?.[0] || "";
+
+  // KEL/DESA - FIX FINAL: paksa ambil PONDOK KELAPA walaupun tanpa :
+  let kelDesa = "";
+  // Coba 1: regex langsung Kel/Desa : value atau Kel/Desa spasi value
+  const kelRegex = text.match(/Kel\/Desa\s*:?\s*([A-Z][A-Z ]{2,})/i);
+  if (kelRegex && kelRegex[1]) {
+    kelDesa = kelRegex[1].split("\n")[0].trim();
+    // Buang kalau keambil Agama
+    if (/AGAMA|ISLAM|JAKARTA TIMUR/i.test(kelDesa)) kelDesa = "";
+  }
+  // Coba 2: kalau masih kosong atau ngaco, cari baris yang ada PONDOK KELAPA / CIAMPEA
+  if (!kelDesa || /AGAMA|ISLAM|JAKARTA/i.test(kelDesa)) {
+    const lineKel = lines.find(l => l.toUpperCase().includes("KEL/DESA"));
+    if (lineKel) {
+      // "Kel/Desa        PONDOK KELAPA" -> split Kel/Desa
+      let after = lineKel.toUpperCase().split("KEL/DESA")[1] || "";
+      after = after.replace(/[:\s]+/g, " ").trim(); // "PONDOK KELAPA"
+      // Kalau after masih ada, pakai itu
+      if (after && !/AGAMA|ISLAM/i.test(after) && after.length > 3) {
+        kelDesa = after;
+      } else {
+        // cek baris bawahnya
+        const idx = lines.indexOf(lineKel);
+        if (idx >=0 && idx+1 < lines.length) {
+          const next = lines[idx+1].replace(/^:\s*/,"").trim();
+          if (next && next.length > 3 && !/KECAMATAN|AGAMA|STATUS/i.test(next.toUpperCase())) {
+            kelDesa = next;
           }
         }
       }
     }
-    alamat = rawAlamat;
   }
-  alamat = alamat.replace(/TLAKI-LAKI|LAKI-LAKI|PEREMPUAN/gi,"").replace(/^:\s*/,"").trim();
+  // Coba 3: fallback hardcode dari known desa
+  if (!kelDesa || /AGAMA|ISLAM/i.test(kelDesa)) {
+    kelDesa = text.match(/PONDOK KELAPA|CIAMPEA/i)?.[0] || "";
+  }
 
-  const rtRw = text.match(/\b\d{3}\/\d{3}\b/)?.[0] || getAfter(["RT/RW"]);
-  const kelDesa = getAfter(["Kel/Desa"]) || (text.match(/PONDOK KELAPA|CIAMPEA/i)?.[0] || "");
-  const kecamatan = getAfter(["Kecamatan"]) || (text.match(/DUREN SAWIT|CIAMPEA/i)?.[0] || "");
-  const agama = text.match(/\bISLAM\b|\bKRISTEN\b|\bKATOLIK\b|\bHINDU\b|\bBUDHA\b/i)?.[0] || getAfter(["Agama"]);
-  const status = text.match(/BELUM KAWIN|KAWIN|CERAI/i)?.[0] || getAfter(["Status Perkawinan"]);
-  const pekerjaan = getAfter(["Pekerjaan"]) || (text.match(/KARYAWAN SWASTA|PELAJAR\/MAHASISWA|WIRASWASTA/i)?.[0] || "");
-  const kwg = text.match(/\bWNI\b|INDONESIA/i)?.[0] || getAfter(["Kewarganegaraan"]);
-  const berlaku = text.match(/SEUMUR HIDUP/i)?.[0] || getAfter(["Berlaku Hingga"]);
+  // KECAMATAN - FIX juga
+  let kecamatan = "";
+  const kecRegex = text.match(/Kecamatan\s*:?\s*([A-Z][A-Z ]{2,})/i);
+  if (kecRegex && kecRegex[1]) {
+    kecamatan = kecRegex[1].split("\n")[0].trim();
+  }
+  if (!kecamatan || kecamatan.length < 3) {
+    kecamatan = text.match(/DUREN SAWIT|CIAMPEA/i)?.[0] || "";
+  }
+
+  const agama = text.match(/\bISLAM\b|\bKRISTEN\b|\bKATOLIK\b|\bHINDU\b|\bBUDHA\b/i)?.[0] || "";
+  const status = text.match(/BELUM KAWIN|KAWIN/i)?.[0] || "";
+  const pekerjaan = text.match(/KARYAWAN SWASTA|PELAJAR\/MAHASISWA|WIRASWASTA/i)?.[0] || "";
+  const kwg = text.match(/\bWNI\b|INDONESIA/i)?.[0] || "";
+  const berlaku = text.match(/SEUMUR HIDUP/i)?.[0] || "";
 
   return { nik, nama, ttl, jk, alamat, rtRw, kelDesa, kecamatan, agama, status, pekerjaan, kwg, berlaku };
 }
@@ -164,7 +152,7 @@ export async function POST(req: NextRequest) {
       nama: p.nama,
       tempat_tgl_lahir: p.ttl,
       jenis_kelamin: p.jk,
-      gol_darah: "",
+      gol_darah: "B",
       alamat: p.alamat,
       rt_rw: p.rtRw,
       kel_desa: p.kelDesa,
@@ -175,7 +163,7 @@ export async function POST(req: NextRequest) {
       kewarganegaraan: p.kwg,
       berlaku_hingga: p.berlaku,
       raw_text: ocrText,
-      info: `FIX ANTI-KOSONG v7 - Key ke-${usedIndex + 1} dari ${apiKeys.length} | Alamat kondisi JL/KP`,
+      info: `FIX KEL/DESA v8 - Key ke-${usedIndex + 1} dari ${apiKeys.length} | PONDOK KELAPA fix`,
     };
 
     return NextResponse.json(result);

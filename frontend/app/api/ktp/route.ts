@@ -62,14 +62,14 @@ function parseKTP(rawText: string) {
 
   // --- ALAMAT KONDISI AKA ---
   let alamat = "";
-  // KONDISI 1: JL.
-  const jlAll = [...text.matchAll(/(JL\.?\s*[A-Z0-9 ,\/\-]{3,})/gi)];
-  const kpAll = [...text.matchAll(/(KP\.?\s*[A-Z0-9 ,\/\-]{3,})/gi)];
+  // KONDISI 1: JL. - pakai Array.from biar lolos build Vercel
+  const jlAll = Array.from(text.matchAll(/(JL\.?\s*[A-Z0-9 ,\/\-]{3,})/gi));
+  const kpAll = Array.from(text.matchAll(/(KP\.?\s*[A-Z0-9 ,\/\-]{3,})/gi));
   
   if (jlAll.length > 0) {
-    alamat = jlAll[0][0].replace(/^:\s*/,"").trim();
+    alamat = (jlAll[0] as any)[0].replace(/^:\s*/,"").trim();
   } else if (kpAll.length > 0) {
-    alamat = kpAll[0][0].replace(/^:\s*/,"").trim();
+    alamat = (kpAll[0] as any)[0].replace(/^:\s*/,"").trim();
   } else {
     // Fallback: ambil setelah Alamat tapi filter LAKI
     let rawAlamat = getAfter(["Alamat"]);

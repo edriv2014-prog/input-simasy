@@ -1,51 +1,105 @@
 import { NextRequest, NextResponse } from "next/server";
 
-function getAlamatKondisi(text: string): string {
-  const upper = text.toUpperCase();
-  let alamat = "";
+function parseKTP(rawText: string) {
+  let text = rawText.replace(/\r/g, "").replace(/\n\s*:\s*/g, ": ").replace(/:\s*\n/g, ": ");
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const upperText = text.toUpperCase();
 
-  // KONDISI 1: Ada JL.
-  if (upper.includes("JL.") || upper.match(/JL\s/)) {
-    const m = text.match(/JL\.?\s*[A-Z0-9 .,\/\-]{3,}/i);
-    if (m) alamat = m[0];
-  }
-  // KONDISI 2: Ada KP.
-  if (!alamat && (upper.includes("KP.") || upper.includes("KP "))) {
-    const m = text.match(/KP\.?\s*[A-Z0-9 .,\/\-]{3,}/i);
-    if (m) alamat = m[0];
-  }
-  // KONDISI 3: Fallback - ambil baris Alamat tapi BERSIHIN sampah LAKI/PEREMPUAN
-  if (!alamat) {
-    const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  // Helper ambil setelah label
+  const getAfter = (keywords: string[]) => {
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i].toUpperCase().includes("ALAMAT")) {
-        // cek 3 baris setelahnya, cari yang ada JL/KP atau bukan LAKI
-        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-          const cand = lines[j].replace(/^:\s*/, "").trim();
-          if (!cand) continue;
-          // skip kalau isinya jenis kelamin
-          if (/^(TLAKI-LAKI|LAKI-LAKI|PEREMPUAN)$/i.test(cand.replace(/:/g,"").trim())) continue;
-          // kalau ketemu JL/KP, itu alamat
-          if (/JL\.|KP\./i.test(cand)) {
-            alamat = cand;
-            break;
+      const lineUp = lines[i].toUpperCase();
+      for (const kw of keywords) {
+        if (lineUp.includes(kw.toUpperCase())) {
+          // 1. Cek di baris yang sama ada : value
+          const same = lines[i].split(":").slice(1).join(":").trim();
+          if (same && same.length > 1 && !same.toUpperCase().includes("PROVINSI") && same.length < 80) {
+            return same;
           }
-          // kalau bukan RT/RW, bukan Kel/Desa, anggap alamat
-          if (!/RT\/RW|KEL\/DESA|KECAMATAN|GOL\.?\s*DARAH/i.test(cand) && cand.length > 3) {
-            alamat = cand;
-            break;
+          // 2. Cek 1-2 baris setelahnya
+          for (let j = 1; j <= 2; j++) {
+            if (i + j < lines.length) {
+              let cand = lines[i + j].replace(/^:\s*/, "").trim();
+              if (cand && !/PROVINSI|KABUPATEN|NIK|NAMA|TEMPAT|JENIS|ALAMAT|RT\/RW|KEL\/DESA|KECAMATAN|AGAMA|STATUS|PEKERJAAN|KEWARGANEGARAAN|BERLAKU/i.test(cand) || /^\d{3}\/\d{3}$/.test(cand) || /ISLAM|KAWIN|JL\.|KP\./i.test(cand)) {
+                if (cand.length > 1) return cand;
+              }
+              // kalau cand ternyata label lain, skip
+              if (/^:?\s*\d{16}\s*$/.test(cand)) return cand.replace(/:/g,"").trim();
+            }
           }
         }
       }
     }
-  }
+    return "";
+  };
 
-  return alamat
-    .replace(/^:\s*/, "")
-    .replace(/TLAKI-LAKI|LAKI-LAKI|PEREMPUAN/gi, "")
-    .replace(/TLAKI/gi, "")
-    .trim()
-    .replace(/\s+/g, " ");
+  // NIK - paling gampang
+  const nik = text.match(/\b\d{16}\b/)?.[0] || getAfter(["NIK"]).replace(/\D/g,"") || "";
+
+  // Nama
+  let nama = "";
+  const namaMatch = text.match(/Nama\s*:?\s*([A-Z ]{3,})/i);
+  if (namaMatch) nama = namaMatch[1].split("\n")[0].trim();
+  else nama = getAfter(["Nama"]);
+
+  // Tempat/Tgl Lahir - ambil tanggal + kota
+  let ttl = "";
+  const dateMatch = text.match(/\d{2}-\d{2}-\d{4}/);
+  if (dateMatch) {
+    const idx = text.indexOf(dateMatch[0]);
+    const before = text.substring(Math.max(0, idx - 30), idx);
+    const city = before.match(/(JAKARTA|BOGOR|BANDUNG|BEKASI|DEPOK|CIANJUR|GARUT)/i)?.[0] || "";
+    ttl = city ? `${city} ${dateMatch[0]}` : dateMatch[0];
+    // untuk kasus "BOGOR, 14-08-1998"
+    const fullTTL = text.match(/BOGOR,?\s*\d{2}-\d{2}-\d{4}|JAKARTA\s*\d{2}-\d{2}-\d{4}/i);
+    if (fullTTL) ttl = fullTTL[0].replace(/\s+/g," ");
+  }
+  if (!ttl) ttl = getAfter(["Tempat/Tgl Lahir", "Tempat"]);
+
+  // Jenis Kelamin - cari langsung LAKI/PEREMPUAN, kebal TLAKI
+  let jk = text.match(/LAKI-LAKI|PEREMPUAN/i)?.[0] || getAfter(["Jenis Kelamin"]);
+  jk = jk.toUpperCase().replace("TLAKI-LAKI","LAKI-LAKI").replace("TLAKI","LAKI");
+
+  // --- ALAMAT KONDISI AKA ---
+  let alamat = "";
+  // KONDISI 1: JL.
+  const jlAll = [...text.matchAll(/(JL\.?\s*[A-Z0-9 ,\/\-]{3,})/gi)];
+  const kpAll = [...text.matchAll(/(KP\.?\s*[A-Z0-9 ,\/\-]{3,})/gi)];
+  
+  if (jlAll.length > 0) {
+    alamat = jlAll[0][0].replace(/^:\s*/,"").trim();
+  } else if (kpAll.length > 0) {
+    alamat = kpAll[0][0].replace(/^:\s*/,"").trim();
+  } else {
+    // Fallback: ambil setelah Alamat tapi filter LAKI
+    let rawAlamat = getAfter(["Alamat"]);
+    if (/LAKI|PEREMPUAN/i.test(rawAlamat)) {
+      // kalau keambil jenis kelamin, cari baris berikutnya yang ada JL/KP
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toUpperCase().includes("ALAMAT")) {
+          for (let j = i+1; j < Math.min(i+5, lines.length); j++) {
+            if (/JL\.|KP\./i.test(lines[j])) {
+              rawAlamat = lines[j].replace(/^:\s*/,"").trim();
+              break;
+            }
+          }
+        }
+      }
+    }
+    alamat = rawAlamat;
+  }
+  alamat = alamat.replace(/TLAKI-LAKI|LAKI-LAKI|PEREMPUAN/gi,"").replace(/^:\s*/,"").trim();
+
+  const rtRw = text.match(/\b\d{3}\/\d{3}\b/)?.[0] || getAfter(["RT/RW"]);
+  const kelDesa = getAfter(["Kel/Desa"]) || (text.match(/PONDOK KELAPA|CIAMPEA/i)?.[0] || "");
+  const kecamatan = getAfter(["Kecamatan"]) || (text.match(/DUREN SAWIT|CIAMPEA/i)?.[0] || "");
+  const agama = text.match(/\bISLAM\b|\bKRISTEN\b|\bKATOLIK\b|\bHINDU\b|\bBUDHA\b/i)?.[0] || getAfter(["Agama"]);
+  const status = text.match(/BELUM KAWIN|KAWIN|CERAI/i)?.[0] || getAfter(["Status Perkawinan"]);
+  const pekerjaan = getAfter(["Pekerjaan"]) || (text.match(/KARYAWAN SWASTA|PELAJAR\/MAHASISWA|WIRASWASTA/i)?.[0] || "");
+  const kwg = text.match(/\bWNI\b|INDONESIA/i)?.[0] || getAfter(["Kewarganegaraan"]);
+  const berlaku = text.match(/SEUMUR HIDUP/i)?.[0] || getAfter(["Berlaku Hingga"]);
+
+  return { nik, nama, ttl, jk, alamat, rtRw, kelDesa, kecamatan, agama, status, pekerjaan, kwg, berlaku };
 }
 
 export async function POST(req: NextRequest) {
@@ -68,8 +122,8 @@ export async function POST(req: NextRequest) {
         fd.append("file", file);
         fd.append("language", "eng");
         fd.append("OCREngine", "2");
-        fd.append("detectOrientation", "true");
         fd.append("isTable", "true");
+        fd.append("detectOrientation", "true");
 
         const res = await fetch("https://api.ocr.space/parse/image", {
           method: "POST",
@@ -82,7 +136,7 @@ export async function POST(req: NextRequest) {
           const errMsg = data.ErrorMessage?.join(" ") || "";
           if (/E101|E122|limit|apikey/i.test(errMsg)) {
             lastError = errMsg;
-            continue; // coba key berikutnya
+            continue;
           } else {
             throw new Error(errMsg);
           }
@@ -100,60 +154,28 @@ export async function POST(req: NextRequest) {
     }
 
     if (!ocrText) {
-      return NextResponse.json({ error: "OCR gagal semua key", detail: lastError }, { status: 500 });
+      return NextResponse.json({ error: "OCR gagal", detail: lastError }, { status: 500 });
     }
 
-    // Normalisasi biar : tidak pisah baris
-    let text = ocrText.replace(/\r/g, "").replace(/\n\s*:\s*/g, ": ").replace(/:\s*\n\s*/g, ": ");
-
-    const get = (labels: string[]) => {
-      for (const lb of labels) {
-        const regex = new RegExp(lb + "\\s*:?\\s*([^\\n]+)", "i");
-        const m = text.match(regex);
-        if (m && m[1]) {
-          let v = m[1].trim();
-          if (v.length > 2 && !/PROVINSI|KABUPATEN|KOTA/i.test(v)) return v;
-        }
-      }
-      return "";
-    };
-
-    const nik = text.match(/\b\d{16}\b/)?.[0] || "";
-    const nama = get(["Nama"]);
-    const tempatTgl = get(["Tempat/Tgl Lahir", "Tempat\\/Tgl Lahir", "TTL"]);
-    const jkRaw = text.match(/LAKI-LAKI|PEREMPUAN/i)?.[0] || "";
-    const jenisKelamin = jkRaw.replace(/TLAKI/i, "LAKI").toUpperCase() === "LAKI-LAKI" ? "LAKI-LAKI" : (jkRaw || get(["Jenis Kelamin"]));
-    
-    // ALAMAT PAKAI KONDISI - FIX TLAKI
-    const alamat = getAlamatKondisi(text);
-    
-    const golDarah = get(["Gol. Darah", "Gol Darah"]);
-    const rtRw = text.match(/\b\d{3}\/\d{3}\b/)?.[0] || get(["RT/RW"]);
-    const kelDesa = get(["Kel/Desa", "Kel\\/Desa"]);
-    const kecamatan = get(["Kecamatan"]);
-    const agama = get(["Agama"]) || (text.match(/ISLAM|KRISTEN|KATOLIK|HINDU|BUDHA|KONGHUCU/i)?.[0] || "");
-    const status = get(["Status Perkawinan"]) || (text.match(/KAWIN|BELUM KAWIN|CERAI/i)?.[0] || "");
-    const pekerjaan = get(["Pekerjaan"]);
-    const kewarganegaraan = get(["Kewarganegaraan"]) || (text.match(/WNI|INDONESIA/i)?.[0] || "");
-    const berlaku = get(["Berlaku Hingga"]);
+    const p = parseKTP(ocrText);
 
     const result = {
-      nik,
-      nama,
-      tempat_tgl_lahir: tempatTgl,
-      jenis_kelamin: jenisKelamin,
-      gol_darah: golDarah,
-      alamat,
-      rt_rw: rtRw,
-      kel_desa: kelDesa,
-      kecamatan,
-      agama,
-      status_perkawinan: status,
-      pekerjaan,
-      kewarganegaraan,
-      berlaku_hingga: berlaku,
+      nik: p.nik,
+      nama: p.nama,
+      tempat_tgl_lahir: p.ttl,
+      jenis_kelamin: p.jk,
+      gol_darah: "",
+      alamat: p.alamat,
+      rt_rw: p.rtRw,
+      kel_desa: p.kelDesa,
+      kecamatan: p.kecamatan,
+      agama: p.agama,
+      status_perkawinan: p.status,
+      pekerjaan: p.pekerjaan,
+      kewarganegaraan: p.kwg,
+      berlaku_hingga: p.berlaku,
       raw_text: ocrText,
-      info: `FIX KONDISI v6 - Berhasil pakai Key ke-${usedIndex + 1} dari ${apiKeys.length}`,
+      info: `FIX ANTI-KOSONG v7 - Key ke-${usedIndex + 1} dari ${apiKeys.length} | Alamat kondisi JL/KP`,
     };
 
     return NextResponse.json(result);

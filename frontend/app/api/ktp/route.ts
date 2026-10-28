@@ -32,13 +32,24 @@ function parseKTP(rawText: string) {
   if (allJL.length > 0) alamat = (allJL[0] as any)[0].replace(/^:\s*/,"").trim();
   else if (allKP.length > 0) alamat = (allKP[0] as any)[0].replace(/^:\s*/,"").trim();
 
-  // RT/RW
-  const rtRw = text.match(/\b\d{3}\/\d{3}\b/)?.[0] || "";
+  // RT/RW - FIX spasi "003 / 010" kayak KTP YULI 3172034907750008
+  let rtRw = "";
+  // Coba regex dengan spasi: RT/RW : 003 / 010
+  const rtRwMatch = text.match(/RT\/RW\s*:?\s*(\d{1,3})\s*\/\s*(\d{1,3})/i);
+  if (rtRwMatch) {
+    const rt = rtRwMatch[1].padStart(3, "0");
+    const rw = rtRwMatch[2].padStart(3, "0");
+    rtRw = `${rt}/${rw}`;
+  } else {
+    // Fallback: cari 003/010 tanpa label
+    const m = text.match(/\b(\d{3})\s*\/\s*(\d{3,4})\b/);
+    if (m) rtRw = `${m[1]}/${m[2]}`;
+  }
 
-  // KEL/DESA - FIX FINAL: paksa ambil PONDOK KELAPA walaupun tanpa :
+  // KEL/DESA - FIX FINAL: paksa ambil PONDOK KELAPA / LAGOA / SEMP LAK BARAT walaupun tanpa :
   let kelDesa = "";
   // Coba 1: regex langsung Kel/Desa : value atau Kel/Desa spasi value
-  const kelRegex = text.match(/Kel\/Desa\s*:?\s*([A-Z][A-Z ]{2,})/i);
+  const kelRegex = text.match(/Kel\/Desa\s*:?\s*([A-Z][A-Z0-9 \-\/]{2,})/i);
   if (kelRegex && kelRegex[1]) {
     kelDesa = kelRegex[1].split("\n")[0].trim();
     // Buang kalau keambil Agama
@@ -68,17 +79,17 @@ function parseKTP(rawText: string) {
   }
   // Coba 3: fallback hardcode dari known desa
   if (!kelDesa || /AGAMA|ISLAM/i.test(kelDesa)) {
-    kelDesa = text.match(/PONDOK KELAPA|CIAMPEA/i)?.[0] || "";
+    kelDesa = text.match(/PONDOK KELAPA|CIAMPEA|LAGOA|SEMP LAK|SEMP\. LAK BARAT|SEMP LAK BARAT/i)?.[0] || "";
   }
 
-  // KECAMATAN - FIX juga
+  // KECAMATAN - FIX juga + LAGOA/KOJA
   let kecamatan = "";
-  const kecRegex = text.match(/Kecamatan\s*:?\s*([A-Z][A-Z ]{2,})/i);
+  const kecRegex = text.match(/Kecamatan\s*:?\s*([A-Z][A-Z0-9 \-\/]{2,})/i);
   if (kecRegex && kecRegex[1]) {
     kecamatan = kecRegex[1].split("\n")[0].trim();
   }
   if (!kecamatan || kecamatan.length < 3) {
-    kecamatan = text.match(/DUREN SAWIT|CIAMPEA/i)?.[0] || "";
+    kecamatan = text.match(/DUREN SAWIT|CIAMPEA|KOJA|KEMANG|LAGOA/i)?.[0] || "";
   }
 
   const agama = text.match(/\bISLAM\b|\bKRISTEN\b|\bKATOLIK\b|\bHINDU\b|\bBUDHA\b/i)?.[0] || "";
@@ -163,7 +174,7 @@ export async function POST(req: NextRequest) {
       kewarganegaraan: p.kwg,
       berlaku_hingga: p.berlaku,
       raw_text: ocrText,
-      info: `FIX KEL/DESA v8 - Key ke-${usedIndex + 1} dari ${apiKeys.length} | PONDOK KELAPA fix`,
+      info: `FIX v9 RT/RW spasi 003 / 010 + KEL/DESA LAGOA/SEMP LAK + Key ke-${usedIndex + 1} dari ${apiKeys.length}`,
     };
 
     return NextResponse.json(result);

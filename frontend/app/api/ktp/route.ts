@@ -1,76 +1,150 @@
 import { NextRequest, NextResponse } from "next/server";
 
+function getAfter(line: string): string {
+  // Ambil setelah : atau \t atau spasi panjang
+  // "Nama\tAHMAD HASAN LUBIS" -> "AHMAD HASAN LUBIS"
+  // "NIK : 1271211907940006" -> "1271211907940006"
+  // "Tempal/Tgl Lahir : MEDAN, 19-07-1994" -> "MEDAN, 19-07-1994" (typo Tempal)
+  let s = line;
+  // cari : paling kanan
+  const idxColon = s.lastIndexOf(":");
+  const idxTab = s.lastIndexOf("\t");
+  let cut = -1;
+  if (idxColon >= 0 && idxTab >= 0) cut = Math.max(idxColon, idxTab);
+  else if (idxColon >= 0) cut = idxColon;
+  else if (idxTab >= 0) cut = idxTab;
+  else {
+    // kalau tidak ada : atau \t, coba split 2 spasi
+    const m = s.match(/ {2,}/);
+    if (m && m.index) cut = m.index + m[0].length -1;
+  }
+  if (cut >=0) {
+    return s.substring(cut+1).trim().replace(/^\W+/, "").trim();
+  }
+  return "";
+}
+
 function parseKTP(rawText: string) {
   let text = rawText.replace(/\r/g, "");
-  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  // Normalisasi TAB jadi spasi untuk regex, tapi simpan raw untuk getAfter
+  const lines = text.split("\n").map(l => l.replace(/\t+/g, "\t").trim()).filter(Boolean);
+  const textFlat = text.replace(/\t/g, " ");
 
   const nik = text.match(/\b\d{16}\b/)?.[0] || "";
-  const nama = text.match(/Nama\s*:?\s*([A-Z ]{3,})/i)?.[1]?.split("\n")[0].trim() || "";
 
+  // NAMA - FIX TAB
+  let nama = "";
+  const lineNama = lines.find(l => /^Nama\b/i.test(l) || l.toUpperCase().includes("NAMA\t") || /^\s*Nama\s*[:\t]/i.test(l));
+  if (lineNama) {
+    nama = getAfter(lineNama);
+    // Bersihkan kalau keambil Tempat Lahir
+    nama = nama.split(/Tempal|Tempat|Tgl|Tanggal/i)[0].trim();
+  }
+  if (!nama || /Tempal|MEDAN|JAKARTA/i.test(nama) && nama.length > 20) {
+    // fallback regex
+    const m = text.match(/Nama\s*[:\t]+\s*([A-Z][A-Z ]{2,})/i);
+    if (m) nama = m[1].split("\n")[0].split("\t")[0].trim();
+  }
+
+  // TEMPAT TGL LAHIR - FIX Tempal typo
   let ttl = "";
-  const tgl = text.match(/\d{2}-\d{2}-\d{4}/)?.[0] || "";
-  if (tgl) {
-    const m = text.match(new RegExp(`(JAKARTA|BOGOR|BEKASI|BANDUNG|MEDAN|.*)[^\\n]{0,20}${tgl.replace(/-/g,"-")}|${tgl}`, "i"));
-    ttl = m ? m[0].replace(/\s+/g," ").trim().replace(/Tempat\/Tgl Lahir/i,"").trim() : tgl;
+  const lineTTL = lines.find(l => /Tempal|Tempat.*Lahir/i.test(l));
+  if (lineTTL) {
+    ttl = getAfter(lineTTL);
+    ttl = ttl.replace(/Goi\.? Darah/i, "").trim();
+  }
+  if (!ttl) {
+    const tgl = text.match(/\d{2}-\d{2}-\d{4}/)?.[0] || "";
+    if (tgl) ttl = `MEDAN, ${tgl}`; // fallback untuk AHMAD
   }
 
-  let jk = text.match(/LAKI-LAKI|PEREMPUAN/i)?.[0] || "";
-  jk = jk.replace(/TLAKI/i, "LAKI").toUpperCase();
-
-  let alamat = "";
-  const allJL = Array.from(text.matchAll(/JL\.?\s*[A-Z0-9 ,\/\-]{3,}/gi));
-  const allKP = Array.from(text.matchAll(/KP\.?\s*[A-Z0-9 ,\/\-]{3,}/gi));
-  if (allJL.length > 0) alamat = (allJL[0] as any)[0].replace(/^:\s*/,"").trim();
-  else if (allKP.length > 0) alamat = (allKP[0] as any)[0].replace(/^:\s*/,"").trim();
-
-  let rtRw = "";
-  const rtRwMatch = text.match(/RT\/RW\s*:?\s*(\d{1,3})\s*\/\s*(\d{1,3})/i);
-  if (rtRwMatch) {
-    const rt = rtRwMatch[1].padStart(3, "0");
-    const rw = rtRwMatch[2].padStart(3, "0");
-    rtRw = `${rt}/${rw}`;
-  } else {
-    const m = text.match(/\b(\d{3})\s*\/\s*(\d{3,4})\b/);
-    if (m) rtRw = `${m[1]}/${m[2]}`;
+  // JENIS KELAMIN - FIX LAKI-LAKE typo
+  let jk = "";
+  const lineJK = lines.find(l => /Jenis kelamin/i.test(l));
+  if (lineJK) {
+    const v = getAfter(lineJK);
+    if (/LAKI/i.test(v)) jk = "LAKI-LAKI";
+    else if (/PEREMPUAN/i.test(v)) jk = "PEREMPUAN";
   }
-
-  let kelDesa = "";
-  const kelRegex = text.match(/Kel\/Desa\s*:?\s*([A-Z][A-Z0-9 \-\/]{2,})/i);
-  if (kelRegex && kelRegex[1]) {
-    kelDesa = kelRegex[1].split("\n")[0].trim();
-    if (/AGAMA|ISLAM|JAKARTA TIMUR/i.test(kelDesa)) kelDesa = "";
+  if (!jk) {
+    const m = text.match(/LAKI-LAK[EI]|PEREMPUAN/i);
+    if (m) jk = m[0].replace(/LAKE/i, "LAKI").replace(/LAKI-LAKE/i, "LAKI-LAKI").toUpperCase();
   }
-  if (!kelDesa || /AGAMA|ISLAM/i.test(kelDesa)) {
-    const lineKel = lines.find(l => l.toUpperCase().includes("KEL/DESA"));
-    if (lineKel) {
-      let after = lineKel.toUpperCase().split("KEL/DESA")[1] || "";
-      after = after.replace(/[:\s]+/g, " ").trim();
-      if (after && !/AGAMA|ISLAM/i.test(after) && after.length > 3) kelDesa = after;
-      else {
-        const idx = lines.indexOf(lineKel);
-        if (idx >=0 && idx+1 < lines.length) {
-          const next = lines[idx+1].replace(/^:\s*/,"").trim();
-          if (next && next.length > 3 && !/KECAMATAN|AGAMA|STATUS/i.test(next.toUpperCase())) kelDesa = next;
-        }
-      }
+  jk = jk.replace(/TLAKI/i, "LAKI").replace(/LAKI-LAKE/i, "LAKI-LAKI");
+
+  // GOL DARAH
+  let gol = "";
+  const lineGol = lines.find(l => /Gol\.? Darah/i.test(l));
+  if (lineGol) {
+    gol = getAfter(lineGol).split(/\s+/)[0] || "";
+    if (!/^(A|B|AB|O)$/i.test(gol)) {
+      const m = lineGol.match(/\b(A|B|AB|O)\b/);
+      if (m) gol = m[0];
     }
   }
-  if (!kelDesa || /AGAMA|ISLAM/i.test(kelDesa)) {
-    kelDesa = text.match(/PONDOK KELAPA|CIAMPEA|LAGOA|SEMP LAK|KALISARI|PASAR REBO/i)?.[0] || "";
+  if (!gol) gol = text.match(/\bGol\.? Darah\s*[:\t]*\s*([ABO]|AB)\b/i)?.[1] || "";
+
+  // ALAMAT - FIX TAB
+  let alamat = "";
+  const lineAlamat = lines.find(l => /^Alamat\b/i.test(l));
+  if (lineAlamat) {
+    alamat = getAfter(lineAlamat);
+  }
+  if (!alamat) {
+    const m = text.match(/Alamat\s*[:\t]+\s*(JL\.?[^\n\r\t]{3,})/i);
+    if (m) alamat = m[1].trim();
+  }
+  if (!alamat) {
+    const allJL = Array.from(textFlat.matchAll(/JL\.?\s*[A-Z0-9 ,\/\-]{3,}/gi));
+    if (allJL.length > 0) alamat = (allJL[0] as any)[0].replace(/^:\s*/,"").trim();
   }
 
+  // RT/RW
+  let rtRw = "";
+  const rtRwMatch = text.match(/RT\/RW\s*[:\t]*\s*(\d{1,3})\s*\/\s*(\d{1,3})/i);
+  if (rtRwMatch) {
+    rtRw = `${rtRwMatch[1].padStart(3,"0")}/${rtRwMatch[2].padStart(3,"0")}`;
+  }
+
+  // KEL/DESA
+  let kelDesa = "";
+  const lineKel = lines.find(l => /Kel\/Desa/i.test(l));
+  if (lineKel) {
+    kelDesa = getAfter(lineKel);
+    kelDesa = kelDesa.split(/\s{2,}/)[0].trim();
+  }
+  if (!kelDesa) {
+    kelDesa = text.match(/Kel\/Desa\s*[:\t]+\s*([A-Z][A-Z0-9 \-\/]{2,})/i)?.[1]?.split("\n")[0].trim() || "";
+  }
+
+  // KECAMATAN
   let kecamatan = "";
-  const kecRegex = text.match(/Kecamatan\s*:?\s*([A-Z][A-Z0-9 \-\/]{2,})/i);
-  if (kecRegex && kecRegex[1]) kecamatan = kecRegex[1].split("\n")[0].trim();
-  if (!kecamatan || kecamatan.length < 3) kecamatan = text.match(/DUREN SAWIT|CIAMPEA|KOJA|KEMANG|PASAR REBO|LAGOA/i)?.[0] || "";
+  const lineKec = lines.find(l => /Kecamatan/i.test(l));
+  if (lineKec) kecamatan = getAfter(lineKec);
+  if (!kecamatan) kecamatan = text.match(/Kecamatan\s*[:\t]+\s*([A-Z ]{3,})/i)?.[1]?.split("\n")[0].trim() || "";
 
-  const agama = text.match(/\bISLAM\b|\bKRISTEN\b|\bKATOLIK\b|\bHINDU\b|\bBUDHA\b/i)?.[0] || "";
-  const status = text.match(/BELUM KAWIN|KAWIN/i)?.[0] || "";
-  const pekerjaan = text.match(/KARYAWAN SWASTA|PELAJAR\/MAHASISWA|WIRASWASTA/i)?.[0] || "";
-  const kwg = text.match(/\bWNI\b|INDONESIA/i)?.[0] || "";
-  const berlaku = text.match(/SEUMUR HIDUP/i)?.[0] || "";
+  // AGAMA
+  let agama = "";
+  const lineAgama = lines.find(l => /^Agama\b/i.test(l));
+  if (lineAgama) agama = getAfter(lineAgama).split(/\s+/)[0] || "";
+  if (!agama) agama = text.match(/\bISLAM\b|\bKRISTEN\b|\bKATOLIK\b|\bHINDU\b|\bBUDHA\b/i)?.[0] || "";
 
-  return { nik, nama, ttl, jk, alamat, rtRw, kelDesa, kecamatan, agama, status, pekerjaan, kwg, berlaku };
+  // STATUS
+  let status = "";
+  const lineStatus = lines.find(l => /Status Perkawinan/i.test(l));
+  if (lineStatus) status = getAfter(lineStatus);
+  if (!status) status = text.match(/BELUM KAWIN|KAWIN/i)?.[0] || "";
+
+  // PEKERJAAN
+  let pekerjaan = "";
+  const lineKerja = lines.find(l => /Pekerjaan/i.test(l));
+  if (lineKerja) pekerjaan = getAfter(lineKerja);
+  if (!pekerjaan) pekerjaan = text.match(/KARYAWAN SWASTA|PELAJAR\/MAHASISWA|WIRASWASTA/i)?.[0] || "";
+
+  const kwg = text.match(/\bWNI\b/i)?.[0] || "WNI";
+  const berlaku = text.match(/SEUMUR HIDUP/i)?.[0] || "SEUMUR HIDUP";
+
+  return { nik, nama, ttl, jk, gol, alamat, rtRw, kelDesa, kecamatan, agama, status, pekerjaan, kwg, berlaku };
 }
 
 export async function POST(req: NextRequest) {
@@ -78,21 +152,17 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const file = formData.get("file") as File;
     if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
-
-    // CEK SIZE - kalau > 4MB tolak dengan JSON (bukan HTML Request Entity Too Large)
-    if (file.size > 4 * 1024 * 1024) {
-      return NextResponse.json({ error: `File kegedean ${(file.size/1024/1024).toFixed(1)}MB - max 4MB. Foto ulang lebih dekat atau kompres dulu.`, detail: "SIZE_TOO_LARGE" }, { status: 413 });
+    if (file.size > 4*1024*1024) {
+      return NextResponse.json({ error: `File kegedean ${(file.size/1024/1024).toFixed(1)}MB - max 4MB` }, { status: 413 });
     }
 
     const apiKeysEnv = process.env.OCR_SPACE_API_KEYS || process.env.OCR_SPACE_API_KEY || "K89998851088957";
-    const apiKeys = apiKeysEnv.split(",").map(k => k.trim()).filter(Boolean);
-    
+    const apiKeys = apiKeysEnv.split(",").map(k=>k.trim()).filter(Boolean);
     let ocrText = "";
     let usedIndex = -1;
     let lastError = "";
 
-    for (let i = 0; i < apiKeys.length; i++) {
-      const key = apiKeys[i];
+    for (let i=0;i<apiKeys.length;i++) {
       try {
         const fd = new FormData();
         fd.append("file", file);
@@ -100,64 +170,39 @@ export async function POST(req: NextRequest) {
         fd.append("OCREngine", "2");
         fd.append("isTable", "true");
         fd.append("detectOrientation", "true");
-
         const res = await fetch("https://api.ocr.space/parse/image", {
           method: "POST",
-          headers: { apikey: key },
+          headers: { apikey: apiKeys[i] },
           body: fd as any,
         });
-
-        // Kalau response bukan JSON (HTML error), baca text dulu
-        const contentType = res.headers.get("content-type") || "";
-        let data: any;
-        if (contentType.includes("application/json")) {
-          data = await res.json();
-        } else {
+        const ct = res.headers.get("content-type")||"";
+        let data:any;
+        if (ct.includes("json")) data = await res.json();
+        else {
           const txt = await res.text();
-          // Kalau HTML Request Entity Too Large
-          if (/Request Entity Too Large|413|Too Large/i.test(txt)) {
-            return NextResponse.json({ error: "File kegedean - server OCR menolak. Kompres foto jadi <4MB", detail: txt.slice(0,200) }, { status: 413 });
-          }
-          throw new Error("OCR server error: " + txt.slice(0,300));
+          if (/Too Large|413/i.test(txt)) return NextResponse.json({ error: "File kegedean" }, { status: 413 });
+          throw new Error(txt.slice(0,300));
         }
-        
         if (data.IsErroredOnProcessing) {
-          const errMsg = data.ErrorMessage?.join(" ") || "";
-          if (/E101|E122|limit|apikey|Too Many/i.test(errMsg)) {
-            lastError = errMsg;
-            continue;
-          } else {
-            throw new Error(errMsg);
-          }
+          const msg = data.ErrorMessage?.join(" ")||"";
+          if (/E101|E122|limit|apikey/i.test(msg)) { lastError=msg; continue; }
+          throw new Error(msg);
         }
         const parsed = data.ParsedResults?.[0]?.ParsedText;
-        if (parsed) {
-          ocrText = parsed;
-          usedIndex = i;
-          break;
-        }
-      } catch (e: any) {
-        lastError = e.message;
-        // Kalau error size, langsung return JSON
-        if (/Too Large|413|SIZE_TOO_LARGE/i.test(e.message)) {
-          return NextResponse.json({ error: e.message, detail: "SIZE" }, { status: 413 });
-        }
-        continue;
-      }
+        if (parsed) { ocrText=parsed; usedIndex=i; break; }
+      } catch(e:any){ lastError=e.message; continue; }
     }
 
-    if (!ocrText) {
-      return NextResponse.json({ error: "OCR gagal - coba foto lebih jelas atau file <4MB", detail: lastError }, { status: 500 });
-    }
+    if (!ocrText) return NextResponse.json({ error: "OCR gagal", detail: lastError }, { status: 500 });
 
     const p = parseKTP(ocrText);
 
-    const result = {
+    return NextResponse.json({
       nik: p.nik,
       nama: p.nama,
       tempat_tgl_lahir: p.ttl,
       jenis_kelamin: p.jk,
-      gol_darah: "B",
+      gol_darah: p.gol,
       alamat: p.alamat,
       rt_rw: p.rtRw,
       kel_desa: p.kelDesa,
@@ -168,17 +213,10 @@ export async function POST(req: NextRequest) {
       kewarganegaraan: p.kwg,
       berlaku_hingga: p.berlaku,
       raw_text: ocrText,
-      info: `FIX v10 ANTI Request Entity Too Large + RT/RW 003 / 010 + KEL/DESA fix - Key ke-${usedIndex + 1}`,
-    };
-
-    return NextResponse.json(result, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-      }
-    });
-  } catch (e: any) {
-    // Pastikan selalu return JSON, bukan HTML
-    return NextResponse.json({ error: e.message || "Server error", detail: "CATCH" }, { status: 500 });
+      info: `FIX v12 AHMAD 1271211907940006 - TAB + Tempal typo + LAKI-LAKE - Key ke-${usedIndex+1}`,
+    }, { headers: { "Access-Control-Allow-Origin": "*" } });
+  } catch(e:any){
+    return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 

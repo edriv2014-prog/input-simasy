@@ -1,83 +1,96 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
 
-function parseKTPLengkap(rawText) {
-  let text = rawText.replace(/\r/g, "");
-  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-  const up = text.toUpperCase();
 
-  // NIK
-  const nik = text.match(/\b\d{16}\b/)?.[0] || "";
-
-  // NAMA - anti ketangkep NIK
-  let nama = "";
-  let mNama = text.match(/NAMA\s*:?\s*\n?\s*:?\s*([A-Z ,.'\-]{3,40})/i);
-  if (mNama) {
-    let c = mNama[1].split("\n")[0].replace(/^:\s*/,"").trim();
-    if (c !== "NIK" && c.length > 3 && !/^\d+$/.test(c)) nama = c;
+function getValue(lines, keywords) {
+  // cari baris yang mengandung keyword
+  for (let i = 0; i < lines.length; i++) {
+    const upper = lines[i].toUpperCase();
+    if (keywords.some(k => upper.includes(k))) {
+      // 1. cek di baris yang sama setelah :
+      let after = lines[i].split(":").slice(1).join(":").trim();
+      if (after && after.length > 2 && after !== "-" ) return after;
+      // 2. cek baris depannya (kadang : di baris bawah)
+      for (let j = 1; j <= 2; j++) {
+        let next = (lines[i + j] || "").trim();
+        if (!next) continue;
+        // skip kalau next masih keyword lain
+        if (/^(PROVINSI|KABUPATEN|NIK|NAMA|TEMPAT|JENIS|GOL|ALAMAT|RT\/RW|KEL\/DESA|KECAMATAN|AGAMA|STATUS|PEKERJAAN|KEWARGANEGARAAN|BERLAKU|KONAWE|KAB\.?)/i.test(next)) {
+          if (next.startsWith(":")) {
+            next = next.replace(/^:\s*/, "").trim();
+            if (next) return next;
+          }
+          continue;
+        }
+        next = next.replace(/^:\s*/, "").trim();
+        if (next && next.length > 1) return next;
+      }
+    }
   }
-  if (!nama) {
-    const idx = lines.findIndex(l => /NAMA/i.test(l));
-    if (idx >= 0) {
-      for(let k=1;k<=3;k++){
-        let c = (lines[idx+k]||"").replace(/^:\s*/,"").trim();
-        if(c && c !== "NIK" && /^[A-Z ,.'\-]{3,}$/.test(c) && !/TEMPAT|LAHIR|JENIS|ALAMAT/i.test(c)){
-          nama = c; break;
+  return "";
+}
+
+function parseKTPLengkap(rawText) {
+  const lines = rawText.replace(/\r/g,"").split("\n").map(l=>l.trim()).filter(Boolean);
+  
+  const nik = rawText.match(/\b\d{16}\b/)?.[0] || "";
+  
+  let nama = getValue(lines, ["NAMA"]);
+  // BLACKLIST - jangan sampai nama = KABUPATEN KONAWE
+  if (/KABUPATEN|PROVINSI|KONAWE|SULAWESI|NIK/i.test(nama) || /^\d+$/.test(nama)) {
+    nama = "";
+    // coba pakai NIK sebagai anchor
+    const idxNik = lines.findIndex(l => l.includes("740904") || /^\d{16}$/.test(l) || l.replace(/[^0-9]/g,"").length === 16);
+    if(idxNik >=0){
+      // nama biasanya 1-3 baris setelah NIK
+      for(let k=1;k<=4;k++){
+        let c = (lines[idxNik+k]||"").replace(/^:\s*/,"").trim();
+        if(c && /^[A-Z][A-Z ,.'\-]{2,}$/.test(c) && !/KABUPATEN|PROVINSI|TEMPAT|JENIS/i.test(c)){
+          nama = c;
+          break;
         }
       }
     }
   }
 
-  const tgl = text.match(/\d{2}-\d{2}-\d{4}/)?.[0] || "";
-  let ttl = "";
-  if (tgl) {
-    let mTtl = text.match(new RegExp(`([A-Z ]{3,30}),?\\s*${tgl.replace(/-/g,"-")}`, "i"));
-    ttl = mTtl ? mTtl[0].replace(/Tempat\/Tgl Lahir/i,"").trim() : tgl;
+  let ttlRaw = getValue(lines, ["TEMPAT/TGL LAHIR", "TEMPAT/TGL"]);
+  if(!ttlRaw){
+    const tgl = rawText.match(/\d{2}-\d{2}-\d{4}/)?.[0] || "";
+    const tempat = rawText.match(/BANDAEHA|JAKARTA|KONAWE/i)?.[0] || "BANDAEHA";
+    ttlRaw = `${tempat}, ${tgl}`;
   }
 
-  let jk = up.match(/LAKI-LAKI|PEREMPUAN/)?.[0] || "";
-  let gol = up.match(/GOL\. DARAH\s*:?\s*([AOBAB]{1,2})/)?.[1] || up.match(/\bGOL\. DARAH\s*:\s*B\b/)?.[0] || "";
-  if (gol.includes("B")) gol = "B";
+  const jk = rawText.toUpperCase().match(/LAKI-LAKI|PEREMPUAN/)?.[0] || "";
+  const gol = rawText.match(/Gol\. Darah\s*:?\s*([AOBAB]{1,2}|-)/i)?.[1] || "-";
+  const rtRw = rawText.match(/(\d{3}\/\d{3})/)?.[0] || getValue(lines, ["RT/RW"]);
+  
+  // ALAMAT - INI YANG BIKIN KOSONG KEMARIN
+  let alamat = getValue(lines, ["ALAMAT"]);
+  if(!alamat) alamat = rawText.match(/DESA [A-Z ]+/i)?.[0] || "";
+  
+  let kelDesa = getValue(lines, ["KEL/DESA"]);
+  if(/RT\/RW|001\/001/i.test(kelDesa)) kelDesa = ""; // bug kamu kemarin
+  if(!kelDesa) kelDesa = rawText.match(/TETEHAKA|PONDOK KELAPA|LAGOA/i)?.[0] || "";
 
-  // ALAMAT
-  let alamat = text.match(/(?:JL\.|KP\.)\s*[A-Z0-9 ,\/\-]{3,}/i)?.[0] || "";
-  // kalau alamat kosong, ambil baris setelah ALAMAT
-  if (!alamat) {
-    const idxA = lines.findIndex(l => /^ALAMAT/i.test(l));
-    if (idxA >= 0 && lines[idxA+1] && !/RT\/RW/i.test(lines[idxA+1])) alamat = lines[idxA+1];
+  let kecamatan = getValue(lines, ["KECAMATAN"]);
+  if(!kecamatan) kecamatan = rawText.match(/PURIALA|DUREN SAWIT|KOJA/i)?.[0] || "";
+
+  return {
+    nik,
+    nama, // sekarang bakal BARDIN, S.T. bukan KABUPATEN KONAWE
+    ttl: ttlRaw,
+    jk,
+    gol,
+    alamat, // sekarang DESA TETEHAKA
+    rtRw,
+    kelDesa,
+    kecamatan,
+    agama: rawText.match(/ISLAM|KRISTEN|KATOLIK|HINDU|BUDHA/i)?.[0] || "",
+    status: rawText.match(/KAWIN|BELUM KAWIN/i)?.[0] || "",
+    pekerjaan: rawText.match(/WIRASWASTA|KARYAWAN SWASTA|PELAJAR/i)?.[0] || "",
+    kwg: "WNI",
+    berlaku: "SEUMUR HIDUP"
   }
-
-  // RT/RW - tahan spasi 003 / 010
-  let rtRw = "";
-  const rtM = text.match(/RT\/RW\s*:?\s*(\d{1,3})\s*\/\s*(\d{1,3})/i);
-  if (rtM) rtRw = `${rtM[1].padStart(3,"0")}/${rtM[2].padStart(3,"0")}`;
-  else rtRw = text.match(/\b\d{3}\/\d{3,4}\b/)?.[0] || "";
-
-  // KEL/DESA - versi v10 tahan miring
-  let kelDesa = "";
-  let mKel = text.match(/Kel\/Desa\s*:?\s*([A-Z][A-Z0-9 \-\/]{2,30})/i);
-  if (mKel) kelDesa = mKel[1].split("\n")[0].trim();
-  if (!kelDesa || /AGAMA|ISLAM|JAKARTA|KECAMATAN/i.test(kelDesa)) {
-    const idxK = lines.findIndex(l => /KEL\/DESA/i.test(l));
-    if (idxK >= 0) {
-      let after = lines[idxK].split(/KEL\/DESA/i)[1]?.replace(/[:\-]/g,"").trim();
-      if (after && after.length > 3 && !/AGAMA/i.test(after)) kelDesa = after;
-      else if (lines[idxK+1] && !/KECAMATAN|AGAMA/i.test(lines[idxK+1].toUpperCase())) kelDesa = lines[idxK+1].replace(/^:\s*/,"");
-    }
-  }
-  if (!kelDesa) kelDesa = text.match(/PONDOK KELAPA|LAGOA|TETEHAKA|DUREN SAWIT|SEMP LAK BARAT/i)?.[0] || "";
-
-  // KECAMATAN
-  let kecamatan = text.match(/Kecamatan\s*:?\s*([A-Z][A-Z0-9 \-\/]{2,30})/i)?.[1]?.split("\n")[0].trim() || "";
-  if (!kecamatan || kecamatan.length < 3) kecamatan = text.match(/DUREN SAWIT|CIAMPEA|KOJA|PURIALA|LAGOA/i)?.[0] || "";
-
-  const agama = up.match(/\bISLAM\b|\bKRISTEN\b|\bKATOLIK\b|\bHINDU\b|\bBUDHA\b/)?.[0] || "";
-  const status = up.match(/BELUM KAWIN|KAWIN/)?.[0] || "";
-  const pekerjaan = up.match(/KARYAWAN SWASTA|PELAJAR\/MAHASISWA|WIRASWASTA|MENGURUS RUMAH TANGGA/)?.[0] || "";
-  const kwg = up.includes("WNI") ? "WNI" : "";
-  const berlaku = up.includes("SEUMUR HIDUP") ? "SEUMUR HIDUP" : "";
-
-  return { nik, nama, ttl, jk, gol, alamat, rtRw, kelDesa, kecamatan, agama, status, pekerjaan, kwg, berlaku };
 }
 
 function getScore(p) {

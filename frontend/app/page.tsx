@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 
 type KtpData = {
   nik?: string;
@@ -17,9 +17,37 @@ type KtpData = {
   kewarganegaraan?: string;
   berlaku_hingga?: string;
   raw_text?: string;
-  confidence?: number;
   error?: string;
 };
+
+// Kompres gambar di browser sebelum upload biar <4MB
+async function compressImage(file: File): Promise<File> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      let w = img.width, h = img.height;
+      const maxDim = 1600; // max 1600px
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = (h / w) * maxDim; w = maxDim; }
+        else { w = (w / h) * maxDim; h = maxDim; }
+      }
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve(file); return; }
+      ctx.drawImage(img, 0, 0, w, h);
+      canvas.toBlob((blob) => {
+        if (!blob) { resolve(file); return; }
+        const newFile = new File([blob], file.name, { type: "image/jpeg" });
+        console.log(`Kompres: ${(file.size/1024/1024).toFixed(2)}MB -> ${(newFile.size/1024/1024).toFixed(2)}MB`);
+        resolve(newFile);
+      }, "image/jpeg", 0.7); // quality 70%
+    };
+    img.onerror = () => resolve(file);
+    img.src = URL.createObjectURL(file);
+  });
+}
 
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
@@ -30,23 +58,21 @@ export default function Page() {
   const [errorMsg, setErrorMsg] = useState<string>("");
 
   useEffect(() => {
-    if (data?.nik) {
-      localStorage.setItem("SIMASY_KTP_DATA", JSON.stringify(data));
-    }
+    if (data?.nik) localStorage.setItem("SIMASY_KTP_DATA", JSON.stringify(data));
   }, [data]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] || null;
     setFile(f);
     setData(null);
     setRawOcr("");
     setErrorMsg("");
     if (f) {
-      const url = URL.createObjectURL(f);
-      setPreview(url);
-    } else {
-      setPreview(null);
-    }
+      setPreview(URL.createObjectURL(f));
+      if (f.size > 4 * 1024 * 1024) {
+        setErrorMsg(`File ${(f.size/1024/1024).toFixed(1)}MB kegedean - akan dikompres otomatis jadi ~1MB pas upload`);
+      }
+    } else setPreview(null);
   };
 
   const handleUpload = async () => {
@@ -54,22 +80,45 @@ export default function Page() {
     setLoading(true);
     setErrorMsg("");
     setData(null);
-    const form = new FormData();
-    form.append("file", file);
     try {
-      const res = await fetch("/api/ktp", {
-        method: "POST",
-        body: form,
-      });
-      const json = await res.json();
+      // Kompres dulu kalau >1.5MB
+      let uploadFile = file;
+      if (file.size > 1.5 * 1024 * 1024) {
+        uploadFile = await compressImage(file);
+      }
+
+      const form = new FormData();
+      form.append("file", uploadFile);
+
+      const res = await fetch("/api/ktp", { method: "POST", body: form });
+
+      // FIX: kalau server bales HTML (Request Entity Too Large), jangan parse JSON
+      const contentType = res.headers.get("content-type") || "";
+      let json: any;
+      if (contentType.includes("application/json")) {
+        json = await res.json();
+      } else {
+        const txt = await res.text();
+        // Kalau Vercel limit
+        if (txt.includes("Request Entity Too Large") || txt.includes("413") || res.status === 413) {
+          throw new Error(`File kegedean ${(file.size/1024/1024).toFixed(1)}MB - max 4MB. Coba foto ulang lebih dekat, jangan pakai 12MP. Hasil kompres masih ${ (uploadFile.size/1024/1024).toFixed(1)}MB`);
+        }
+        throw new Error(txt.slice(0,300));
+      }
+
       if (!res.ok) {
-        setErrorMsg(json.error || "Gagal OCR");
+        setErrorMsg(json.error || `Gagal OCR (${res.status})`);
       } else {
         setData(json);
-        setRawOcr(json.raw_text || json.raw || "");
+        setRawOcr(json.raw_text || "");
       }
     } catch (err: any) {
-      setErrorMsg(err.message || "Error fetch");
+      // FIX: jangan muncul Unexpected token R
+      if (err.message && err.message.includes("Unexpected token")) {
+        setErrorMsg(`File kegedean atau server sibuk. Coba kompres foto dulu atau foto ulang lebih dekat (max 4MB). Error: ${err.message.slice(0,150)}`);
+      } else {
+        setErrorMsg(err.message || "Error fetch");
+      }
     } finally {
       setLoading(false);
     }
@@ -77,27 +126,22 @@ export default function Page() {
 
   const openSimasy = () => {
     if (!data?.nik) return;
-    // Simpan untuk Tampermonkey di simasy.id
     localStorage.setItem("SIMASY_KTP_DATA", JSON.stringify(data));
     const url = `https://simasy.id/u/fianggota0_u.php?nik=${encodeURIComponent(data.nik)}&autofill=1`;
     window.open(url, "_blank");
   };
 
-  const copyJson = () => {
-    if (data) {
-      navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-      alert("JSON KTP dicopy!");
-    }
-  };
-
   return (
     <div style={{ maxWidth: 800, margin: "0 auto", padding: 20, fontFamily: "sans-serif" }}>
-      <h1 style={{ fontSize: 24, fontWeight: "bold" }}>KTP - Input Simasy</h1>
+      <h1 style={{ fontSize: 22, fontWeight: "bold" }}>KTP - Input Simasy</h1>
+      <p style={{ color: "#555", fontSize: 12 }}>FIX v10: auto-kompres <4MB + RT/RW 003 / 010 fix + Kel/Desa PONDOK KELAPA/LAGOA + tombol hitam di website anti-loop</p>
+
       <div style={{ border: "1px solid #ccc", padding: 15, borderRadius: 8, marginTop: 15 }}>
         <input type="file" accept="image/*" onChange={handleFileChange} />
         {preview && (
           <div style={{ marginTop: 10 }}>
-            <img src={preview} alt="preview" style={{ maxWidth: "100%", maxHeight: 400, borderRadius: 6, border: "1px solid #ddd" }} />
+            <img src={preview} alt="preview" style={{ maxWidth: "100%", maxHeight: 380, borderRadius: 6, border: "1px solid #ddd" }} />
+            {file && <div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>Size: {(file.size/1024/1024).toFixed(2)}MB {file.size > 4*1024*1024 ? " - AKAN DIKOMPRES" : ""}</div>}
           </div>
         )}
         <button
@@ -117,13 +161,16 @@ export default function Page() {
         >
           {loading ? "Membaca KTP..." : "📷 Baca KTP"}
         </button>
-        {errorMsg && <p style={{ color: "red", marginTop: 10 }}>{errorMsg}</p>}
+        {errorMsg && (
+          <div style={{ color: "#b91c1c", background: "#fef2f2", border: "1px solid #fecaca", padding: "8px 10px", borderRadius: 6, marginTop: 10, fontSize: 13 }}>
+            ⚠️ {errorMsg}
+          </div>
+        )}
       </div>
 
       {data && !data.error && (
         <div style={{ marginTop: 20, border: "2px solid #0F8A5F", borderRadius: 10, padding: 15, background: "#f9fffe" }}>
           <h2 style={{ fontWeight: "bold", marginBottom: 10 }}>HASIL BACA KTP - URUTAN KTP</h2>
-
           <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", rowGap: 6, fontSize: 14 }}>
             <b>NIK :</b> <span>{data.nik}</span>
             <b>Nama :</b> <span>{data.nama}</span>
@@ -141,11 +188,6 @@ export default function Page() {
             <b>Berlaku Hingga :</b> <span>{data.berlaku_hingga}</span>
           </div>
 
-          <div style={{ marginTop: 8, fontSize: 12, background: "#e0f7ef", padding: "6px 8px", borderRadius: 6, color: "#0F6A4A" }}>
-            FIX KEL/DESA v8 - Key ke-1 dari 2 | {data.kel_desa} fix | Alamat kondisi JL/KP fix
-          </div>
-
-          {/* TOMBOL HITAM - LANGSUNG DI WEBSITE, TIDAK PERLU TAMPERMONKEY */}
           <div style={{ marginTop: 15 }}>
             <button
               onClick={openSimasy}
@@ -160,63 +202,20 @@ export default function Page() {
                 cursor: "pointer",
                 border: "2px solid #0F8A5F",
                 lineHeight: 1.3,
-                boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
               }}
             >
               🚀 BUKA SIMASY.ID + ISI NIK {data.nik}
               <br />
               <span style={{ fontWeight: "normal", fontSize: 11 }}>{data.nama} - {data.kel_desa}</span>
             </button>
-
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button
-                onClick={copyJson}
-                style={{
-                  background: "#fff",
-                  color: "#0F8A5F",
-                  padding: "8px 12px",
-                  borderRadius: 6,
-                  fontSize: 12,
-                  cursor: "pointer",
-                  border: "1px solid #0F8A5F",
-                  flex: 1,
-                }}
-              >
-                📋 Copy JSON
-              </button>
-              <button
-                onClick={() => {
-                  if (data?.raw_text) {
-                    navigator.clipboard.writeText(data.raw_text);
-                    alert("Raw OCR dicopy");
-                  }
-                }}
-                style={{
-                  background: "#fff",
-                  color: "#555",
-                  padding: "8px 12px",
-                  borderRadius: 6,
-                  fontSize: 12,
-                  cursor: "pointer",
-                  border: "1px solid #ccc",
-                  flex: 1,
-                }}
-              >
-                📄 Copy Raw
-              </button>
-            </div>
           </div>
 
           <details style={{ marginTop: 15 }}>
             <summary style={{ cursor: "pointer", fontSize: 14 }}>▼ Lihat Raw OCR</summary>
-            <pre style={{ marginTop: 8, background: "#f5f5f5", padding: 10, borderRadius: 6, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-              {rawOcr}
-            </pre>
+            <pre style={{ marginTop: 8, background: "#f5f5f5", padding: 10, borderRadius: 6, fontSize: 11, whiteSpace: "pre-wrap" }}>{rawOcr}</pre>
           </details>
         </div>
       )}
-
-      {data?.error && <p style={{ color: "red", marginTop: 15 }}>{data.error}</p>}
     </div>
   );
 }

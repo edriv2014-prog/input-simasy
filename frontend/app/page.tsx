@@ -1,8 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-
 type KtpData = { nik?: string; nama?: string; tempat_tgl_lahir?: string; jenis_kelamin?: string; gol_darah?: string; alamat?: string; rt_rw?: string; kel_desa?: string; kecamatan?: string; agama?: string; status_perkawinan?: string; pekerjaan?: string; kewarganegaraan?: string; berlaku_hingga?: string; raw_text?: string; error?: string; };
-
 function detectSplitX(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): number | null {
   const w = canvas.width; const h = canvas.height;
   if (w < h * 1.1) return null; if (w < 500) return null;
@@ -24,7 +22,6 @@ function detectSplitX(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D):
   if (w > h * 1.8 && w > 700) return Math.floor(w * 0.42);
   return null;
 }
-
 async function compressImage(file: File): Promise<{ file: File, base64: string, isGabung: boolean, originalBase64: string, cropInfo: string }> {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -53,9 +50,9 @@ async function compressImage(file: File): Promise<{ file: File, base64: string, 
           cropCtx.fillStyle = "#ffffff"; cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
           cropCtx.drawImage(canvas, 0, 0, cropW, h, 0, 0, cropW * scale, h * scale);
           finalCanvas = cropCanvas;
-          cropInfo = `Gabung terdeteksi! Original ${w}x${h} -> split di x=${splitX} -> crop kiri ${cropW}x${h} -> upscale ${scale}x jadi ${cropCanvas.width}x${cropCanvas.height} biar OCR Nama kebaca.`;
+          cropInfo = `Gabung terdeteksi! Original ${w}x${h} -> split x=${splitX} -> crop kiri ${cropW}x${h} -> upscale 3x`;
         } else {
-          cropInfo = `KTP normal single ${w}x${h} - tidak di-crop`;
+          cropInfo = `KTP normal single ${w}x${h}`;
           if (w < 1000) {
             const scale = Math.min(3, 1200 / w);
             const upCanvas = document.createElement("canvas");
@@ -80,7 +77,6 @@ async function compressImage(file: File): Promise<{ file: File, base64: string, 
     reader.readAsDataURL(file);
   });
 }
-
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -90,9 +86,7 @@ export default function Page() {
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [isGabung, setIsGabung] = useState(false);
   const [autoCropInfo, setAutoCropInfo] = useState("");
-
   useEffect(() => { if (data?.nik) localStorage.setItem("SIMASY_KTP_DATA", JSON.stringify(data)); }, [data]);
-
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] || null;
     setFile(f); setData(null); setRawOcr(""); setErrorMsg(""); setIsGabung(false); setAutoCropInfo("");
@@ -107,7 +101,6 @@ export default function Page() {
       localStorage.removeItem("SIMASY_KTP_IMAGE_BASE64");
     }
   };
-
   const handleUpload = async () => {
     if (!file) return;
     setLoading(true); setErrorMsg(""); setData(null);
@@ -134,11 +127,9 @@ export default function Page() {
     } catch (err: any) { setErrorMsg(err.message || "Error fetch"); }
     finally { setLoading(false); }
   };
-
   const openSimasyAnggt = () => {
     if (!data?.nik) return;
     localStorage.setItem("SIMASY_KTP_DATA", JSON.stringify(data));
-    // v20: kirim SEMUA data lewat URL (base64) biar kalau GM storage kosong di InPrivate tetap keisi
     const payload = {
       nik: data.nik || "",
       nama: data.nama || "",
@@ -153,14 +144,14 @@ export default function Page() {
       kerja: data.pekerjaan || "",
     };
     const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-    const url = `https://simasy.id/anggt/index.php?nik=${encodeURIComponent(data.nik || "")}&data=${encodeURIComponent(b64)}&autofill=1`;
+    // v21 FIX: Langsung ke fianggota0.php, bukan index.php (biar tidak stuck di dashboard Selamat datang)
+    const url = `https://simasy.id/anggt/fianggota0.php?nik=${encodeURIComponent(data.nik || "")}&data=${encodeURIComponent(b64)}&autofill=1`;
     window.open(url, "_blank");
   };
-
   return (
     <div style={{ maxWidth: 800, margin: "0 auto", padding: 20, fontFamily: "sans-serif" }}>
-      <h1 style={{ fontSize: 22, fontWeight: "bold" }}>KTP - Input Simasy v20 NAMA NONGOL + URL DATA</h1>
-      <p style={{ color: "#555", fontSize: 12 }}>v20 FIX: Nama ZULKARNAIN nongol + kirim semua data lewat URL (nik+data base64) biar fianggota.php keisi walau di InPrivate GM storage kosong + support fianggota.php & fianggota0.php</p>
+      <h1 style={{ fontSize: 22, fontWeight: "bold" }}>KTP - Input Simasy v21 DIRECT fianggota0.php</h1>
+      <p style={{ color: "#555", fontSize: 12 }}>v21 FIX: Tombol hitam langsung ke fianggota0.php?nik=...&data=... biar tidak stuck di index.php dashboard Selamat datang. Support fianggota1.php, ANTI 2X UPLOAD, STOP sebelum Rekam Data</p>
       <div style={{ border: "1px solid #ccc", padding: 15, borderRadius: 8, marginTop: 15 }}>
         <input type="file" accept="image/*" onChange={handleFileChange} />
         {preview && <div style={{ marginTop: 10 }}><img src={preview} alt="preview" style={{ maxWidth: "100%", maxHeight: 420, borderRadius: 6, border: `2px solid ${isGabung ? '#ffc107' : '#ddd'}` }} /><div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>Asli: {file ? (file.size/1024).toFixed(0)+'KB' : ''} {isGabung ? '-> gabung, auto crop kiri + upscale 3x' : ''}</div></div>}
@@ -185,11 +176,11 @@ export default function Page() {
             <b>Status Perkawinan :</b> <span>{data.status_perkawinan || "-"}</span>
             <b>Pekerjaan :</b> <span>{data.pekerjaan || "-"}</span>
           </div>
-          <div style={{ marginTop: 8, fontSize: 12, background: "#e0f7ef", padding: "6px 8px", borderRadius: 6, color: "#0F6A4A" }}>✅ File KTP sudah disimpan - auto masuk ke simasy.id/anggt tanpa upload ulang - KTP normal & gabung bisa!</div>
+          <div style={{ marginTop: 8, fontSize: 12, background: "#e0f7ef", padding: "6px 8px", borderRadius: 6, color: "#0F6A4A" }}>✅ File KTP sudah disimpan - auto masuk ke simasy.id/anggt tanpa upload ulang</div>
           <div style={{ marginTop: 15 }}>
             <button onClick={openSimasyAnggt} style={{ background: "#000", color: "#fff", padding: "14px 18px", borderRadius: 10, width: "100%", fontWeight: "bold", fontSize: 15, cursor: "pointer", border: "2px solid #0F8A5F" }}>
-              🚀 BUKA simasy.id/anggt/index.php + ISI NIK {data.nik} + FILE KTP AUTO + DATA LEWAT URL
-              <br /><span style={{ fontWeight: "normal", fontSize: 11 }}>{data.nama} - Auto ke fianggota0.php/fianggota.php -> Isi form + File KTP -> Stop di Rekam Data</span>
+              🚀 BUKA simasy.id/anggt/fianggota0.php?nik={data.nik} + FILE KTP AUTO + DATA URL (DIRECT, TIDAK LEWAT INDEX.PHP)
+              <br /><span style={{ fontWeight: "normal", fontSize: 11 }}>{data.nama} - Langsung ke form Data A -> Isi form + File KTP -> Stop di Rekam Data (jangan auto klik)</span>
             </button>
           </div>
           <details style={{ marginTop: 15 }}><summary style={{ cursor: "pointer", fontSize: 14 }}>▼ Lihat Raw OCR</summary><pre style={{ marginTop: 8, background: "#f5f5f5", padding: 10, borderRadius: 6, fontSize: 11, whiteSpace: "pre-wrap" }}>{rawOcr}</pre></details>

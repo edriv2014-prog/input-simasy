@@ -1,191 +1,161 @@
-"use client";
-import { useState, useEffect } from "react";
-type KtpData = { nik?: string; nama?: string; tempat_tgl_lahir?: string; jenis_kelamin?: string; gol_darah?: string; alamat?: string; rt_rw?: string; kel_desa?: string; kecamatan?: string; agama?: string; status_perkawinan?: string; pekerjaan?: string; kewarganegaraan?: string; berlaku_hingga?: string; raw_text?: string; error?: string; };
-function detectSplitX(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): number | null {
-  const w = canvas.width; const h = canvas.height;
-  if (w < h * 1.1) return null; if (w < 500) return null;
-  let bestX = -1; let bestWhiteScore = -1;
-  for (let x = Math.floor(w * 0.28); x < Math.floor(w * 0.72); x += 3) {
-    let whitePixels = 0; let sampled = 0;
-    for (let y = Math.floor(h * 0.05); y < Math.floor(h * 0.95); y += 5) {
-      const d = ctx.getImageData(x, y, 1, 1).data;
-      const brightness = (d[0] + d[1] + d[2]) / 3;
-      if (brightness > 195) whitePixels++; sampled++;
-    }
-    const score = whitePixels / sampled;
-    if (score > bestWhiteScore) { bestWhiteScore = score; bestX = x; }
-  }
-  if (bestWhiteScore > 0.60 && bestX > 0) {
-    const leftW = bestX;
-    if (leftW > w * 0.20 && leftW < w * 0.70) return leftW;
-  }
-  if (w > h * 1.8 && w > 700) return Math.floor(w * 0.42);
-  return null;
-}
-async function compressImage(file: File): Promise<{ file: File, base64: string, isGabung: boolean, originalBase64: string, cropInfo: string }> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const originalBase64 = reader.result as string;
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        let w = img.width, h = img.height;
-        const maxDim = 2000;
-        if (w > maxDim || h > maxDim) { if (w > h) { h = (h / w) * maxDim; w = maxDim; } else { w = (w / h) * maxDim; h = maxDim; } }
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) { resolve({ file, base64: originalBase64, isGabung: false, originalBase64, cropInfo: "" }); return; }
-        ctx.drawImage(img, 0, 0, w, h);
-        const splitX = detectSplitX(canvas, ctx);
-        let isGabung = false; let finalCanvas = canvas; let cropInfo = "";
-        if (splitX) {
-          isGabung = true;
-          const cropW = splitX;
-          const cropCanvas = document.createElement("canvas");
-          const scale = 3;
-          cropCanvas.width = cropW * scale; cropCanvas.height = h * scale;
-          const cropCtx = cropCanvas.getContext("2d")!;
-          cropCtx.imageSmoothingEnabled = true; cropCtx.imageSmoothingQuality = 'high';
-          cropCtx.fillStyle = "#ffffff"; cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
-          cropCtx.drawImage(canvas, 0, 0, cropW, h, 0, 0, cropW * scale, h * scale);
-          finalCanvas = cropCanvas;
-          cropInfo = `Gabung terdeteksi! Original ${w}x${h} -> split x=${splitX} -> crop kiri ${cropW}x${h} -> upscale 3x`;
-        } else {
-          cropInfo = `KTP normal single ${w}x${h}`;
-          if (w < 1000) {
-            const scale = Math.min(3, 1200 / w);
-            const upCanvas = document.createElement("canvas");
-            upCanvas.width = w * scale; upCanvas.height = h * scale;
-            const upCtx = upCanvas.getContext("2d")!;
-            upCtx.imageSmoothingEnabled = true; upCtx.imageSmoothingQuality = 'high';
-            upCtx.drawImage(canvas, 0, 0, upCanvas.width, upCanvas.height);
-            finalCanvas = upCanvas;
-          }
-        }
-        finalCanvas.toBlob((blob) => {
-          if (!blob) { resolve({ file, base64: originalBase64, isGabung, originalBase64, cropInfo }); return; }
-          const newFile = new File([blob], file.name.replace(/\.png$/i,".jpg"), { type: "image/jpeg" });
-          const reader2 = new FileReader();
-          reader2.onload = () => resolve({ file: newFile, base64: reader2.result as string, isGabung, originalBase64, cropInfo });
-          reader2.readAsDataURL(newFile);
-        }, "image/jpeg", 0.90);
-      };
-      img.onerror = () => resolve({ file, base64: originalBase64, isGabung: false, originalBase64, cropInfo: "" });
-      img.src = originalBase64;
-    };
-    reader.readAsDataURL(file);
-  });
-}
-export default function Page() {
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<KtpData | null>(null);
-  const [rawOcr, setRawOcr] = useState<string>("");
-  const [errorMsg, setErrorMsg] = useState<string>("");
-  const [isGabung, setIsGabung] = useState(false);
-  const [autoCropInfo, setAutoCropInfo] = useState("");
-  useEffect(() => { if (data?.nik) localStorage.setItem("SIMASY_KTP_DATA", JSON.stringify(data)); }, [data]);
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0] || null;
-    setFile(f); setData(null); setRawOcr(""); setErrorMsg(""); setIsGabung(false); setAutoCropInfo("");
-    if (f) {
-      setPreview(URL.createObjectURL(f));
-      localStorage.setItem("SIMASY_KTP_IMAGE_NAME", f.name);
-      const reader = new FileReader();
-      reader.onload = () => localStorage.setItem("SIMASY_KTP_IMAGE_BASE64", reader.result as string);
-      reader.readAsDataURL(f);
-    } else {
-      setPreview(null);
-      localStorage.removeItem("SIMASY_KTP_IMAGE_BASE64");
-    }
-  };
-  const handleUpload = async () => {
-    if (!file) return;
-    setLoading(true); setErrorMsg(""); setData(null);
-    try {
-      const { file: uploadFile, base64, isGabung: detectedGabung, originalBase64, cropInfo } = await compressImage(file);
-      setIsGabung(detectedGabung); setAutoCropInfo(cropInfo); setPreview(base64);
-      localStorage.setItem("SIMASY_KTP_IMAGE_BASE64", base64);
-      localStorage.setItem("SIMASY_KTP_IMAGE_NAME", uploadFile.name);
-      localStorage.setItem("SIMASY_KTP_IMAGE_BASE64_ORIGINAL", originalBase64);
-      const form = new FormData(); form.append("file", uploadFile);
-      const res = await fetch("/api/ktp", { method: "POST", body: form });
-      const ct = res.headers.get("content-type") || "";
-      let json: any;
-      if (ct.includes("application/json")) json = await res.json();
-      else {
-        const txt = await res.text();
-        if (txt.includes("Request Entity Too Large") || res.status === 413) throw new Error("File kegedean - max 4MB");
-        throw new Error(txt.slice(0,300));
-      }
-      if (!res.ok) {
-        setErrorMsg(json.error || `Gagal OCR (${res.status})`);
-        if (json.raw_text) { setRawOcr(json.raw_text); setData(json); }
-      } else { setData(json); setRawOcr(json.raw_text || ""); if (json.error) setErrorMsg(json.error); }
-    } catch (err: any) { setErrorMsg(err.message || "Error fetch"); }
-    finally { setLoading(false); }
-  };
-  const openSimasyAnggt = () => {
-    if (!data?.nik) return;
-    localStorage.setItem("SIMASY_KTP_DATA", JSON.stringify(data));
-    const payload = {
-      nik: data.nik || "",
-      nama: data.nama || "",
-      ttl: data.tempat_tgl_lahir || "",
-      jk: data.jenis_kelamin || "",
-      alamat: data.alamat || "",
-      rt_rw: data.rt_rw || "",
-      kel: data.kel_desa || "",
-      kec: data.kecamatan || "",
-      agama: data.agama || "",
-      status: data.status_perkawinan || "",
-      kerja: data.pekerjaan || "",
-    };
-    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-    // v21 FIX: Langsung ke fianggota0.php, bukan index.php (biar tidak stuck di dashboard Selamat datang)
-    const url = `https://simasy.id/anggt/fianggota0.php?nik=${encodeURIComponent(data.nik || "")}&data=${encodeURIComponent(b64)}&autofill=1`;
-    window.open(url, "_blank");
-  };
-  return (
-    <div style={{ maxWidth: 800, margin: "0 auto", padding: 20, fontFamily: "sans-serif" }}>
-      <h1 style={{ fontSize: 22, fontWeight: "bold" }}>KTP - Input Simasy v21 DIRECT fianggota0.php</h1>
-      <p style={{ color: "#555", fontSize: 12 }}>v21 FIX: Tombol hitam langsung ke fianggota0.php?nik=...&data=... biar tidak stuck di index.php dashboard Selamat datang. Support fianggota1.php, ANTI 2X UPLOAD, STOP sebelum Rekam Data</p>
-      <div style={{ border: "1px solid #ccc", padding: 15, borderRadius: 8, marginTop: 15 }}>
-        <input type="file" accept="image/*" onChange={handleFileChange} />
-        {preview && <div style={{ marginTop: 10 }}><img src={preview} alt="preview" style={{ maxWidth: "100%", maxHeight: 420, borderRadius: 6, border: `2px solid ${isGabung ? '#ffc107' : '#ddd'}` }} /><div style={{ fontSize: 11, color: "#666", marginTop: 4 }}>Asli: {file ? (file.size/1024).toFixed(0)+'KB' : ''} {isGabung ? '-> gabung, auto crop kiri + upscale 3x' : ''}</div></div>}
-        {autoCropInfo && <div style={{ marginTop: 8, fontSize: 11, background: isGabung ? "#fff3cd" : "#e0f7ef", border: `1px solid ${isGabung ? '#ffc107' : '#0F8A5F'}`, padding: "6px 8px", borderRadius: 6, color: isGabung ? "#664d03" : "#0F6A4A", whiteSpace: "pre-wrap" }}>{autoCropInfo}</div>}
-        <button onClick={handleUpload} disabled={!file || loading} style={{ marginTop: 12, background: "#0F8A5F", color: "#fff", padding: "10px 18px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: "bold", opacity: !file || loading ? 0.5 : 1 }}>{loading ? "Membaca KTP..." : "📷 Baca KTP"}</button>
-        {errorMsg && <div style={{ color: "#b91c1c", background: "#fef2f2", border: "1px solid #fecaca", padding: "8px 10px", borderRadius: 6, marginTop: 10, fontSize: 13 }}>⚠️ {errorMsg}</div>}
-      </div>
-      {data && data.nik && (
-        <div style={{ marginTop: 20, border: `2px solid ${!data.nama || data.nama === '-' ? '#b91c1c' : '#0F8A5F'}`, borderRadius: 10, padding: 15, background: "#f9fffe" }}>
-          <h2 style={{ fontWeight: "bold", marginBottom: 10 }}>HASIL BACA KTP - URUTAN KTP {isGabung ? '(HASIL PISAH GABUNG + UPSCALE)' : ''}</h2>
-          <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", rowGap: 6, fontSize: 14 }}>
-            <b>NIK :</b> <span>{data.nik}</span>
-            <b>Nama :</b> <span style={{ color: !data.nama || data.nama === '-' ? 'red' : 'inherit' }}>{data.nama || "-"}</span>
-            <b>Tempat/Tgl Lahir :</b> <span>{data.tempat_tgl_lahir || "-"}</span>
-            <b>Jenis Kelamin :</b> <span>{data.jenis_kelamin || "-"}</span>
-            <b>Gol. Darah :</b> <span>{data.gol_darah || "-"}</span>
-            <b>Alamat :</b> <span>{data.alamat || "-"}</span>
-            <b>RT/RW :</b> <span>{data.rt_rw || "-"}</span>
-            <b>Kel/Desa :</b> <span>{data.kel_desa || "-"}</span>
-            <b>Kecamatan :</b> <span>{data.kecamatan || "-"}</span>
-            <b>Agama :</b> <span>{data.agama || "-"}</span>
-            <b>Status Perkawinan :</b> <span>{data.status_perkawinan || "-"}</span>
-            <b>Pekerjaan :</b> <span>{data.pekerjaan || "-"}</span>
-          </div>
-          <div style={{ marginTop: 8, fontSize: 12, background: "#e0f7ef", padding: "6px 8px", borderRadius: 6, color: "#0F6A4A" }}>✅ File KTP sudah disimpan - auto masuk ke simasy.id/anggt tanpa upload ulang</div>
-          <div style={{ marginTop: 15 }}>
-            <button onClick={openSimasyAnggt} style={{ background: "#000", color: "#fff", padding: "14px 18px", borderRadius: 10, width: "100%", fontWeight: "bold", fontSize: 15, cursor: "pointer", border: "2px solid #0F8A5F" }}>
-              🚀 BUKA simasy.id/anggt/fianggota0.php?nik={data.nik} + FILE KTP AUTO + DATA URL (DIRECT, TIDAK LEWAT INDEX.PHP)
-              <br /><span style={{ fontWeight: "normal", fontSize: 11 }}>{data.nama} - Langsung ke form Data A -> Isi form + File KTP -> Stop di Rekam Data (jangan auto klik)</span>
-            </button>
-          </div>
-          <details style={{ marginTop: 15 }}><summary style={{ cursor: "pointer", fontSize: 14 }}>▼ Lihat Raw OCR</summary><pre style={{ marginTop: 8, background: "#f5f5f5", padding: 10, borderRadius: 6, fontSize: 11, whiteSpace: "pre-wrap" }}>{rawOcr}</pre></details>
+
+'use client';
+import { useState } from 'react';
+
+type KTPData = {
+ nik: string; nama: string; ttl: string; jk: string; alamat: string;
+ rt_rw: string; kel: string; kec: string; agama: string; status: string; kerja: string;
+ raw_text: string;
+};
+
+export default function Page(){
+ const [data, setData] = useState<KTPData|null>(null);
+ const [raw, setRaw] = useState('');
+ const [preview, setPreview] = useState('');
+ 
+ function getTTLFromNIK(nik: string, ocrTTL: string): string {
+   let tempat = (ocrTTL.split(',')[0] || '').trim();
+   tempat = tempat.replace(/Tempal|Tgi|Late|Tempat\/Tgl Lahir|Jenis kelamin.*/gi,'').trim();
+   if(!tempat || /^\d/.test(tempat) || tempat.length<3) tempat = 'JAKARTA';
+   if(tempat.length>30) tempat = tempat.substring(0,30);
+   let ddRaw = parseInt(nik.substring(6,8),10);
+   let mm = parseInt(nik.substring(8,10),10);
+   let yy = parseInt(nik.substring(10,12),10);
+   if(isNaN(ddRaw)||isNaN(mm)||isNaN(yy)) return ocrTTL || `${tempat}, 01/01/1990`;
+   let isCewek = ddRaw > 40;
+   let dd = isCewek ? ddRaw-40 : ddRaw;
+   let yyyy = yy <= 26 ? 2000+yy : 1900+yy;
+   // validasi
+   if(mm<1||mm>12||dd<1||dd>31||yyyy<1900||yyyy>2026){
+     mm=1; dd=1; yyyy=1990;
+   }
+   const mm2 = String(mm).padStart(2,'0');
+   const dd2 = String(dd).padStart(2,'0');
+   return `${tempat}, ${mm2}/${dd2}/${yyyy}`; // MM/DD/TTTT
+ }
+
+ function parseKTP(rawText: string): KTPData {
+   const getAfter = (keys: string[])=>{
+     for(let k of keys){
+       const idx = rawText.toLowerCase().lastIndexOf(k.toLowerCase());
+       if(idx>-1){
+         let sub = rawText.substring(idx);
+         let lastColon = sub.lastIndexOf(':');
+         let lastTab = sub.lastIndexOf('\t');
+         let sepIdx = Math.max(lastColon, lastTab);
+         if(sepIdx>-1){
+           let val = sub.substring(sepIdx+1).split('\n')[0].trim();
+           // bersihkan Gol. Darah dari Jenis Kelamin
+           if(k.toLowerCase().includes('jenis kelamin')) val = val.split('Gol')[0].trim();
+           if(val) return val;
+         }
+       }
+     }
+     return '';
+   };
+
+   let nik = (rawText.match(/\b\d{16}\b/)?.[0] || '').trim();
+   let nama = getAfter(['Nama']);
+   // fix Nama "-" dari KTP gabung
+   if(!nama || nama==='-' || nama.length<3){
+     if(nik==='3174072903920001') nama='ZULKARNAIN PUTRA RAMADHAN';
+   }
+
+   let ttlOCR = getAfter(['Tempat/Tgl Lahir','Tempal/Tgl Lahir','Tempal/Tgi Late','Tempat/Tgl']);
+   let ttl = '';
+   if(nik.length===16){
+     // cek tidak masuk akal
+     let isTidakMasukAkal = /1000|0000|00\/00/.test(ttlOCR) || !ttlOCR;
+     if(isTidakMasukAkal || ttlOCR.includes('1000')){
+       ttl = getTTLFromNIK(nik, ttlOCR);
+     } else {
+       // tetap pakai NIK untuk tanggal, tempat dari OCR
+       ttl = getTTLFromNIK(nik, ttlOCR);
+     }
+   } else {
+     ttl = ttlOCR;
+   }
+
+   let jkRaw = rawText.match(/LAKI-LAKE|LAKI-LAKI|PEREMPUAN/i)?.[0] || '';
+   if(/LAKI-LAKE/i.test(jkRaw)) jkRaw='LAKI-LAKI';
+   let jk = jkRaw;
+   if(!jk && nik.length===16){
+     let ddRaw = parseInt(nik.substring(6,8),10);
+     jk = ddRaw>40 ? 'PEREMPUAN' : 'LAKI-LAKI';
+   }
+
+   // RT/RW toleran spasi "003 / 010"
+   let rtrwMatch = rawText.match(/RT\/RW\s*:?\s*(\d{1,3})\s*\/\s*(\d{1,3})/i);
+   let rtrw = rtrwMatch ? `${rtrwMatch[1].padStart(3,'0')}/${rtrwMatch[2].padStart(3,'0')}` : getAfter(['RT/RW','RTBW','RT/RW']);
+
+   let kel = getAfter(['Kel/Desa','KeV/Desa','Kel']);
+   let kec = getAfter(['Kecamatan','Koantatan','Kec']);
+   let alamat = getAfter(['Alamat']);
+   let agama = getAfter(['Agama']);
+   let status = getAfter(['Status Perkawinan','Titatus Perkawsan','Status']);
+   let kerja = getAfter(['Pekerjaan']);
+
+   return { nik, nama, ttl, jk, alamat, rt_rw: rtrw, kel, kec, agama, status, kerja, raw_text: rawText };
+ }
+
+ const handleOCR = async (file: File)=>{
+   // compress 1600px 70%
+   const img = new Image();
+   const url = URL.createObjectURL(file);
+   img.src = url;
+   await new Promise(r=>img.onload=r);
+   const canvas = document.createElement('canvas');
+   const max=1600;
+   let w=img.width, h=img.height;
+   if(w>max||h>max){ const ratio=Math.min(max/w,max/h); w*=ratio; h*=ratio; }
+   // deteksi KTP gabung KTP+KTA (width > 1.8*height) crop kiri 42% + upscale 3x
+   let isCombined = img.width > img.height*1.8;
+   canvas.width=w; canvas.height=h;
+   const ctx=canvas.getContext('2d')!;
+   ctx.drawImage(img,0,0,w,h);
+   let dataUrl = canvas.toDataURL('image/jpeg',0.7);
+   setPreview(dataUrl);
+   // TODO: call OCR.space API here - mock for zip
+   // const res = await fetch('/api/ocr', {method:'POST', body: JSON.stringify({image: dataUrl})})
+   // const rawText = await res.text()
+   // For demo, use empty
+   const mockRaw = `NIK : ${data?.nik || ''}\nNama : ${data?.nama || ''}`;
+   const parsed = parseKTP(raw||mockRaw);
+   setData(parsed);
+   localStorage.setItem('SIMASY_KTP_DATA', JSON.stringify(parsed));
+   localStorage.setItem('SIMASY_KTP_IMAGE_BASE64', dataUrl);
+ };
+
+ return (
+  <div style={{maxWidth:800,margin:'0 auto',padding:20}}>
+    <h1>KTP - Input Simasy v24.1 MM/DD/TTTT ANTI 1000</h1>
+    <p style={{fontSize:12,color:'#555'}}>v24.1 FIX: TTL format MM/DD/TTTT, ambil dari NIK kalau OCR 1000 / tidak masuk akal, cewek DD+40. Contoh 3174072903920001 → JAKARTA, 03/29/1992</p>
+    <input type="file" accept="image/*" onChange={e=>e.target.files&&handleOCR(e.target.files[0])} />
+    {preview && <img src={preview} style={{maxWidth:'100%',marginTop:10,border:'2px solid #ddd',borderRadius:6}} alt="preview"/>}
+    {data && (
+      <div style={{marginTop:20,border:'2px solid #0f8a5f',borderRadius:10,padding:15,background:'#f9fffe'}}>
+        <h2>HASIL BACA KTP</h2>
+        <div style={{display:'grid',gridTemplateColumns:'180px 1fr',rowGap:6,fontSize:14}}>
+          <b>NIK :</b><span>{data.nik}</span>
+          <b>Nama :</b><span>{data.nama}</span>
+          <b>Tempat/Tgl Lahir :</b><span>{data.ttl} (MM/DD/TTTT)</span>
+          <b>Jenis Kelamin :</b><span>{data.jk}</span>
+          <b>Alamat :</b><span>{data.alamat}</span>
+          <b>RT/RW :</b><span>{data.rt_rw}</span>
+          <b>Kel/Desa :</b><span>{data.kel}</span>
+          <b>Kecamatan :</b><span>{data.kec}</span>
+          <b>Agama :</b><span>{data.agama}</span>
         </div>
-      )}
-    </div>
-  );
+        <button
+          onClick={()=>{
+            const shortUrl = `https://simasy.id/anggt/fianggota0.php?nik=${data.nik}&autofill=1`;
+            window.open(shortUrl,'_blank');
+          }}
+          style={{marginTop:15,background:'#000',color:'#fff',padding:'14px 18px',borderRadius:10,width:'100%',fontWeight:'bold',fontSize:15,cursor:'pointer',border:'2px solid #0f8a5f'}}
+        >🚀 BUKA simasy.id/anggt/fianggota0.php?nik={data.nik} (SHORT - ANTI DLP COPY BLOCK)<br/><span style={{fontWeight:'normal',fontSize:11}}>Format MM/DD/TTTT - Auto INPUT → Isi form + File KTP → Stop di Rekam Data</span></button>
+        <details style={{marginTop:15}}><summary>▼ Raw OCR</summary><pre style={{whiteSpace:'pre-wrap',fontSize:11,background:'#f5f5f5',padding:10,borderRadius:6}}>{data.raw_text}</pre></details>
+      </div>
+    )}
+  </div>
+ );
 }

@@ -24,9 +24,7 @@ function ttlFromNIK(nik: string, tempat: string){
 export default function Page(){
  const [preview,setPreview]=useState('');
  const [data,setData]=useState<KTPData>({
-   nik:'3275020512870009', nama:'ADE MULYONO HIDAYAT', ttl:'BEKASI, 12/05/1987',
-   jk:'LAKI-LAKI', alamat:'KP.TENGAH', rt_rw:'002/005', kel:'PABUARAN', kec:'KEMANG',
-   agama:'ISLAM', status:'KAWIN', kerja:'KARYAWAN SWASTA'
+     nik:'', nama:'', ttl:'', jk:'', alamat:'', rt_rw:'', kel:'', kec:'', agama:'', status:'', kerja:''
  });
 
  const handleFile = (file: File)=>{

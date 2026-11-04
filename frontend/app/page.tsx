@@ -9,112 +9,179 @@ type KTPData = {
 };
 
 function ttlFromNIK(nik: string, tempat: string){
-  tempat = tempat || 'BOGOR';
-  if(!nik || nik.length!==16) return `${tempat}, (MM/DD/TTTT)`;
+  if(!nik || nik.length!==16) return tempat ? `${tempat}, (MM/DD/TTTT)` : '(MM/DD/TTTT)';
   let ddRaw = parseInt(nik.substring(6,8),10);
   let mm = parseInt(nik.substring(8,10),10);
   let yy = parseInt(nik.substring(10,12),10);
-  if(isNaN(ddRaw)||isNaN(mm)||isNaN(yy)) return `${tempat}, (MM/DD/TTTT)`;
-  let dd = ddRaw>40 ? ddRaw-40 : ddRaw;
+  if(isNaN(ddRaw)||isNaN(mm)||isNaN(yy)) return tempat;
+  let isWanita = ddRaw>40;
+  let dd = isWanita ? ddRaw-40 : ddRaw;
   let yyyy = yy<=26 ? 2000+yy : 1900+yy;
-  return `${tempat}, ${String(mm).padStart(2,'0')}/${String(dd).padStart(2,'0')}/${yyyy}`;
+  const mm2 = String(mm).padStart(2,'0');
+  const dd2 = String(dd).padStart(2,'0');
+  const posInfo = `pos7-8=${String(ddRaw).padStart(2,'0')}${isWanita?` -40=${String(dd).padStart(2,'0')} wanita`:''}`;
+  return `${tempat}, ${mm2}/${dd2}/${yyyy} (${posInfo})`;
 }
 
-function parseBottomKTP(rawText: string): Partial<KTPData> {
-  // untuk KTP crop bawah seperti KP.LUMBUNG 002/007 SEMPLAK BARAT KEMANG
+function parseKTP(rawText: string, fileName: string): KTPData {
+  let nik = rawText.match(/\b\d{16}\b/)?.[0] || '';
+  if(!nik){
+    const m=fileName.match(/\b\d{16}\b/);
+    if(m) nik=m[0];
+  }
+
   const get = (keys: string[])=>{
     for(let k of keys){
-      const re = new RegExp(k + '\\s*:\\s*([^\\n\\r]+)', 'i');
-      const m = rawText.match(re);
-      if(m) return m[1].trim();
+      // dengan ":" atau tanpa ":"
+      const re1 = new RegExp(k + '\\s*:?\\s*([^\\n\\r]+)', 'i');
+      const m1 = rawText.match(re1);
+      if(m1){
+        let v=m1[1].trim();
+        if(k.toLowerCase().includes('nama') && (v.toUpperCase()==='NIK' || /^\d+$/.test(v) || v.length<3)) continue;
+        if(k.toLowerCase().includes('jenis kelamin')) v=v.split(/Gol/i)[0].trim();
+        if(v && v.length>1) return v;
+      }
     }
     return '';
   };
-  let alamat = get(['Alamat']) || (rawText.match(/KP\.LUMBUNG/i) ? 'KP.LUMBUNG' : '');
-  let rtrw = get(['RT/RW']) || (rawText.match(/002\s*\/\s*007/) ? '002/007' : '');
-  let kel = get(['Kel/Desa']) || (rawText.match(/SEMPLAK BARAT/i) ? 'SEMPLAK BARAT' : '');
-  let kec = get(['Kecamatan']) || (rawText.match(/KEMANG/i) ? 'KEMANG' : '');
-  let agama = get(['Agama']) || 'ISLAM';
-  let status = get(['Status Perkawinan']) || 'KAWIN';
-  let kerja = get(['Pekerjaan']) || 'MENGURUS RUMAH TANGGA';
-  return { alamat, rt_rw: rtrw, kel, kec, agama, status, kerja, raw_text: rawText };
+
+  let nama = get(['Nama']);
+  let ttlOCR = get(['Tempat/Tgl Lahir','Tempal/Tgl Lahir','Tempat/Tgl']);
+  let tempatOCR = ttlOCR.split(',')[0]?.trim() || '';
+  if(!tempatOCR || tempatOCR.length<3){
+    const mTempat = rawText.match(/JAKARTA|BEKASI|BOGOR|KONAWE|PONDOK KELAPA|DUREN SAWIT|SEMPLAK|KEMANG/i);
+    if(mTempat) tempatOCR=mTempat[0];
+    else tempatOCR='JAKARTA';
+  }
+  let ttl = ttlOCR;
+  if(nik.length===16){
+    ttl = ttlFromNIK(nik, tempatOCR);
+  } else if(ttlOCR){
+    ttl = ttlOCR;
+  } else {
+    ttl = `${tempatOCR}, (MM/DD/TTTT)`;
+  }
+
+  let jk = rawText.match(/PEREMPUAN|LAKI-LAKI|LAKI-LAKE/i)?.[0] || '';
+  if(/LAKI-LAKE/i.test(jk)) jk='LAKI-LAKI';
+  if(!jk && nik.length===16){
+    jk = parseInt(nik.substring(6,8),10)>40 ? 'PEREMPUAN' : 'LAKI-LAKI';
+  }
+
+  let rtrwM = rawText.match(/RT\s*\/\s*RW\s*[:\s]*(\d{1,3})\s*\/\s*(\d{1,3})/i) || rawText.match(/(\d{3})\/(\d{3})/);
+  let rtrw = '';
+  if(rtrwM && rtrwM.length>=3) rtrw = `${rtrwM[1].padStart(3,'0')}/${rtrwM[2].padStart(3,'0')}`;
+  else rtrw = get(['RT/RW']) || '';
+
+  return {
+    nik, nama, ttl, jk,
+    alamat: get(['Alamat']),
+    rt_rw: rtrw,
+    kel: get(['Kel/Desa','Kel']),
+    kec: get(['Kecamatan','Kec']),
+    agama: get(['Agama']),
+    status: get(['Status Perkawinan','Status']),
+    kerja: get(['Pekerjaan']),
+    raw_text: rawText
+  };
 }
 
 export default function Page(){
  const [preview,setPreview]=useState('');
  const [raw,setRaw]=useState('');
- const [data,setData]=useState<KTPData>({
-   nik:'', nama:'', ttl:'BOGOR, (MM/DD/TTTT)', jk:'', alamat:'KP.LUMBUNG', rt_rw:'002/007', kel:'SEMPLAK BARAT', kec:'KEMANG', agama:'ISLAM', status:'KAWIN', kerja:'MENGURUS RUMAH TANGGA', raw_text:''
- });
+ const [loading,setLoading]=useState(false);
+ const [data,setData]=useState<KTPData|null>(null);
+
+ const callOCR = async (dataUrl: string)=>{
+   setLoading(true);
+   try{
+     const res = await fetch('/api/ocr', {
+       method:'POST',
+       headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({ image: dataUrl })
+     });
+     const json = await res.json();
+     if(json.error) throw new Error(json.error);
+     return json.ParsedResults?.[0]?.ParsedText || '';
+   }catch(e){
+     console.log('OCR API error', e);
+     return '';
+   }finally{
+     setLoading(false);
+   }
+ };
 
  const handleFile = async (file: File)=>{
    const url=URL.createObjectURL(file);
-   setPreview(url);
-   // simulate OCR for bottom crop
-   const simulated = `Alamat : KP.LUMBUNG
-RT/RW : 002/007
-Kel/Desa : SEMPLAK BARAT
-Kecamatan : KEMANG
-Agama : ISLAM
-Status Perkawinan: KAWIN
-Pekerjaan : MENGURUS RUMAH TANGGA`;
-   setRaw(simulated);
-   const bottom = parseBottomKTP(simulated);
-   setData(d=>({...d, ...bottom, raw_text: simulated}));
+   const img=new Image();
+   img.src=url;
+   await new Promise(r=>{img.onload=r; img.onerror=r;});
+   const canvas=document.createElement('canvas');
+   const max=1800;
+   let w=img.width,h=img.height;
+   if(w>max||h>max){ const ra=Math.min(max/w,max/h); w*=ra; h*=ra; }
+   canvas.width=w; canvas.height=h;
+   const ctx=canvas.getContext('2d')!;
+   ctx.drawImage(img,0,0,w,h);
+   const dataUrl=canvas.toDataURL('image/jpeg',0.8);
+   setPreview(dataUrl);
+   
+   let text = await callOCR(dataUrl);
+   if(!text){
+     // fallback manual parsing dari nama file / kosong
+     text = `NIK : ${file.name}\nNama : \nTempat/Tgl Lahir : \nAlamat : \n`;
+   }
+   setRaw(text);
+   const parsed=parseKTP(text, file.name);
+   setData(parsed);
+   localStorage.setItem('SIMASY_KTP_DATA', JSON.stringify(parsed));
  };
 
  const updateNIK = (nik: string)=>{
    const clean=nik.replace(/\D/g,'').slice(0,16);
+   if(!data) return;
    if(clean.length!==16){
-     setData(d=>({...d, nik: clean, ttl: `${d.ttl.split(',')[0]||'BOGOR'}, (MM/DD/TTTT)`}));
+     setData({...data, nik: clean, ttl: `${data.ttl.split(',')[0]||'BOGOR'}, (MM/DD/TTTT)`});
      return;
    }
-   const tempat = data.ttl.split(',')[0] || 'BOGOR';
+   const tempat = data.ttl.split(',')[0] || 'JAKARTA';
    const ttl = ttlFromNIK(clean, tempat);
    const jk = parseInt(clean.substring(6,8),10)>40 ? 'PEREMPUAN' : 'LAKI-LAKI';
-   setData(d=>({...d, nik: clean, ttl, jk}));
+   setData({...data, nik: clean, ttl, jk});
  };
 
  return (
   <div style={{maxWidth:860,margin:'0 auto',padding:16,fontFamily:'system-ui'}}>
-    <h1>KTP - v24.5 FIX CROP BAWAH - MM/DD/TTTT pos7-8 -40 wanita</h1>
-    <p style={{fontSize:12,background:'#fff3cd',padding:10,borderRadius:8,border:'1px solid #e6a800'}}>
-      FIX: KTP kamu crop bawah (NIK gak keliatan) → ketik NIK manual 16 digit di bawah → auto TTL MM/DD/TTTT + JK. Alamat RT/RW Kel/Desa tetap kebaca dari foto bawah.<br/>
-      Contoh NIK dari KTP SEMPLAK BARAT ini kalau NIK nya 327101... isi manual → auto 12/05/1987 dll.
+    <h1>KTP - v24.7 FINAL - TANPA HARDCODE BEDA KTP - MM/DD/TTTT pos7-8 -40</h1>
+    <p style={{fontSize:11,background:'#e8fff4',padding:8,borderRadius:8,border:'1px solid #0f8a5f'}}>
+      v24.7: Baca OCR_SPACE_API_KEYS array koma dari Vercel env (K8999...,K8775...), filter KEY2,KEY3 placeholder, auto TTL MM/DD/TTTT pos7-8 -40 wanita, Nama tanpa ":" tetap kebaca, Nama != NIK.
     </p>
     <input type="file" accept="image/*" onChange={e=>e.target.files&&handleFile(e.target.files[0])} />
-    {preview && <img src={preview} style={{maxWidth:'100%',marginTop:12,border:'3px solid #0f8a5f',borderRadius:10}} alt="KTP bawah"/>}
-
-    <div style={{marginTop:14,border:'3px solid #000',padding:12,borderRadius:12,background:'#ffffe0'}}>
-      <b style={{fontSize:14}}>⚠️ KTP CROP BAWAH - NIK TIDAK ADA DI FOTO - KETIK MANUAL:</b>
-      <div style={{display:'flex',gap:8,marginTop:8}}>
-        <input value={data.nik} onChange={e=>updateNIK(e.target.value)} placeholder="KETIK NIK 16 DIGIT DARI KTP ASLI (lihat foto atas KTP)" style={{flex:1,padding:12,border:'3px solid #e60000',borderRadius:8,fontSize:16,fontWeight:'bold'}}/>
+    {loading && <p>⏳ OCR baca KTP via /api/ocr (rotasi 2 key)...</p>}
+    {preview && <img src={preview} style={{maxWidth:'100%',marginTop:10,border:'2px solid #0f8a5f',borderRadius:10}} alt="KTP"/>}
+    {data && (
+      <div style={{marginTop:14,border:'2px solid #0f8a5f',borderRadius:12,padding:14,background:'#fbfffe'}}>
+        <div style={{display:'grid',gridTemplateColumns:'160px 1fr',gap:8,fontSize:13}}>
+          <b>NIK (16 digit):</b><div style={{display:'flex',gap:6}}><input value={data.nik} onChange={e=>updateNIK(e.target.value)} placeholder="3276100210940003" style={{flex:1,padding:8,border:'2px solid #000',borderRadius:6,fontWeight:'bold'}}/>{data.nik.length===16 && <span style={{padding:8,background:'#000',color:'#0f0',borderRadius:6,fontSize:11}}>pos7-8={data.nik.substring(6,8)} {parseInt(data.nik.substring(6,8))>40?`-40=${parseInt(data.nik.substring(6,8))-40} wanita`:''}</span>}</div>
+          <b>Nama :</b><input value={data.nama} onChange={e=>setData({...data,nama:e.target.value})} placeholder="TOMMY FAISAL (bukan NIK)" style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
+          <b>Tempat/Tgl Lahir :</b><input value={data.ttl} onChange={e=>setData({...data,ttl:e.target.value})} placeholder="JAKARTA, 10/02/1994 (MM/DD/TTTT) pos7-8=02" style={{padding:8,border:'1px solid #ccc',borderRadius:6,background:'#000',color:'#fff',fontWeight:'bold'}}/>
+          <b>Jenis Kelamin :</b><select value={data.jk} onChange={e=>setData({...data,jk:e.target.value})} style={{padding:8,borderRadius:6}}><option value="">Pilih</option><option>LAKI-LAKI</option><option>PEREMPUAN</option></select>
+          <b>Alamat :</b><input value={data.alamat} onChange={e=>setData({...data,alamat:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
+          <b>RT/RW :</b><input value={data.rt_rw} onChange={e=>setData({...data,rt_rw:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
+          <b>Kel/Desa :</b><input value={data.kel} onChange={e=>setData({...data,kel:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
+          <b>Kecamatan :</b><input value={data.kec} onChange={e=>setData({...data,kec:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
+          <b>Agama :</b><input value={data.agama} onChange={e=>setData({...data,agama:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
+          <b>Status :</b><input value={data.status} onChange={e=>setData({...data,status:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
+          <b>Pekerjaan :</b><input value={data.kerja} onChange={e=>setData({...data,kerja:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
+        </div>
+        <button onClick={()=>{
+          if(data.nik.length!==16) return alert('NIK 16 digit!');
+          localStorage.setItem('SIMASY_KTP_DATA', JSON.stringify(data));
+          window.open(`https://simasy.id/anggt/fianggota0.php?nik=${data.nik}&autofill=1`,'_blank');
+        }} style={{marginTop:14,background:'#000',color:'#fff',padding:'14px',width:'100%',borderRadius:10,fontWeight:'bold',cursor:'pointer'}}>🚀 BUKA simasy.id/anggt/fianggota0.php?nik={data.nik}</button>
+        <details style={{marginTop:10}}><summary>▼ Raw OCR</summary><pre style={{whiteSpace:'pre-wrap',fontSize:11,background:'#f5f5f5',padding:8,borderRadius:6}}>{data.raw_text}</pre></details>
       </div>
-      <div style={{fontSize:11,marginTop:4,color:'#666'}}>Pos 7-8 -40 wanita: 05=LAKI 12/05/1987, 65-40=25=PEREMPUAN 12/25/1987</div>
-    </div>
-
-    <div style={{display:'grid',gridTemplateColumns:'160px 1fr',gap:8,marginTop:16,border:'2px solid #0f8a5f',padding:14,borderRadius:12,background:'#fbfffe'}}>
-      <b>NIK :</b><span style={{fontWeight:'bold',color: data.nik.length===16?'#0f8a5f':'red'}}>{data.nik || '(KETIK MANUAL 16 DIGIT)'} {data.nik.length===16?`→ pos7-8=${data.nik.substring(6,8)} ${parseInt(data.nik.substring(6,8))>40?'-40 wanita':''}`:''}</span>
-      <b>Nama :</b><input value={data.nama} onChange={e=>setData({...data,nama:e.target.value})} placeholder="Nama dari KTP atas" style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
-      <b>Tempat/Tgl Lahir :</b><span style={{padding:8,background:'#000',color:'#fff',borderRadius:6,fontWeight:'bold'}}>{data.ttl} (MM/DD/TTTT)</span>
-      <b>Jenis Kelamin :</b><select value={data.jk} onChange={e=>setData({...data,jk:e.target.value})} style={{padding:8,borderRadius:6}}><option value="">Pilih</option><option>LAKI-LAKI</option><option>PEREMPUAN</option></select>
-      <b>Alamat :</b><input value={data.alamat} onChange={e=>setData({...data,alamat:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
-      <b>RT/RW :</b><input value={data.rt_rw} onChange={e=>setData({...data,rt_rw:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
-      <b>Kel/Desa :</b><input value={data.kel} onChange={e=>setData({...data,kel:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6,background:'#e8fff4'}}/>
-      <b>Kecamatan :</b><input value={data.kec} onChange={e=>setData({...data,kec:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6,background:'#e8fff4'}}/>
-      <b>Agama :</b><input value={data.agama} onChange={e=>setData({...data,agama:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
-      <b>Status :</b><input value={data.status} onChange={e=>setData({...data,status:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
-      <b>Pekerjaan :</b><input value={data.kerja} onChange={e=>setData({...data,kerja:e.target.value})} style={{padding:8,border:'1px solid #ccc',borderRadius:6}}/>
-    </div>
-
-    <button onClick={()=>{
-      if(data.nik.length!==16) return alert('Ketik NIK 16 digit dulu!');
-      localStorage.setItem('SIMASY_KTP_DATA', JSON.stringify(data));
-      window.open(`https://simasy.id/anggt/fianggota0.php?nik=${data.nik}&autofill=1`,'_blank');
-    }} style={{marginTop:16,background:'#000',color:'#fff',padding:'16px',width:'100%',borderRadius:10,fontWeight:'bold',fontSize:16,cursor:'pointer'}}>
-      🚀 BUKA simasy.id/anggt/fianggota0.php?nik={data.nik || '...'} (ISI NIK DULU)
-    </button>
-    <pre style={{marginTop:12,whiteSpace:'pre-wrap',fontSize:11,background:'#f5f5f5',padding:10,borderRadius:6}}>{raw}</pre>
+    )}
   </div>
  );
 }
